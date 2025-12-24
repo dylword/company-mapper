@@ -18,7 +18,11 @@ export async function GET(
         const officers = (officersData.items || []).map((officer: any) => {
             const appointmentsLink = officer.links?.officer?.appointments;
             const officerId = appointmentsLink ? appointmentsLink.split('/')[2] : null;
-            return { ...officer, officer_id: officerId };
+            return {
+                ...officer,
+                officer_id: officerId,
+                address: officer.address // Explicitly ensure address is passed, though ...officer likely covers it
+            };
         });
 
         // 3. Fetch PSCs

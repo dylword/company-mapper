@@ -423,7 +423,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
 
             {/* Footer */}
             <div className="p-6 border-t border-slate-100 bg-white flex flex-col gap-3">
-                <Button onClick={() => onSave(customColor, notes)} className="w-full bg-slate-900 text-white hover:bg-slate-800">
+                <Button onClick={() => onSave(customColor, notes)} className="w-full bg-[#132B5C] text-white hover:bg-[#132B5C]/90">
                     Save Changes
                 </Button>
                 <Button variant="outline" onClick={onExpand} className="w-full border-slate-200 hover:bg-slate-50 text-slate-700">

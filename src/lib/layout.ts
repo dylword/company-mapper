@@ -10,8 +10,8 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
 
     dagreGraph.setGraph({
         rankdir: direction,
-        nodesep: 100, // Increased horizontal separation
-        ranksep: 150  // Increased vertical separation
+        nodesep: 200,
+        ranksep: 120  // Increased slightly from 80 for better balance
     });
 
     nodes.forEach((node) => {
@@ -19,7 +19,12 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
     });
 
     edges.forEach((edge) => {
-        dagreGraph.setEdge(edge.source, edge.target);
+        // "Correspondence" edges should be short (minlen: 1)
+        // All other edges should be longer to maintain spacing (minlen: 3)
+        const isAddressEdge = edge.label === 'Correspondence' || edge.data?.type === 'address';
+        dagreGraph.setEdge(edge.source, edge.target, {
+            minlen: isAddressEdge ? 1 : 3
+        });
     });
 
     dagre.layout(dagreGraph);

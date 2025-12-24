@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useCallback, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, {
     useNodesState,
     useEdgesState,
@@ -12,8 +12,13 @@ import ReactFlow, {
     Node,
     BackgroundVariant,
     Panel,
+    useReactFlow,
+    ReactFlowProvider,
+    getRectOfNodes,
+    getTransformForBounds,
 } from 'reactflow';
-import { ArrowDown, ArrowRight, RefreshCw } from 'lucide-react';
+import { ArrowDown, ArrowRight, RefreshCw, Camera } from 'lucide-react';
+import { toPng } from 'html-to-image';
 import 'reactflow/dist/style.css';
 
 import { Button } from "@/components/ui/button"
@@ -27,10 +32,10 @@ const nodeTypes = {
     businessCard: BusinessCardNode,
 };
 
-export function GraphCanvas() {
+function GraphCanvasContent() {
     const searchParams = useSearchParams();
     const query = searchParams.get('q');
-
+    const { getNodes } = useReactFlow();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
@@ -151,9 +156,84 @@ export function GraphCanvas() {
                                 nationality: officer.nationality,
                                 occupation: officer.occupation,
                                 country_of_residence: officer.country_of_residence,
+                                address: formatAddress(officer.address), // Store formatted address
                                 source: officer // Store full source
                             },
                             position: { x: 0, y: 0 },
+                        });
+                    }
+                });
+
+                // Create Address Nodes for Officers
+                const officerAddressNodes: Node[] = [];
+                const officerAddressEdges: Edge[] = [];
+
+                officers.forEach((officer: any, index: number) => {
+                    if (officer.address) {
+                        const addressLabel = formatAddress(officer.address);
+                        if (!addressLabel) return;
+
+                        const officerId = `officer-${officer.officer_id || index}`;
+                        const addressId = `addr-${officerId}`; // Unique ID for this specific officer's address node instance? 
+                        // Or should we deduplicate addresses? 
+                        // "sit tightly and just under the director node" suggests a dedicated node per director might be better for layout 
+                        // unless we want to show shared addresses. 
+                        // Let's deduplicate by address string to show connections, but for layout "tightly under" might be tricky if shared.
+                        // Let's try deduplicating first as that's more "graph-like".
+
+                        // Actually, to ensure it sits "tightly under", maybe we treat it as a child? 
+                        // But we are using a flat graph. 
+                        // Let's stick to standard nodes for now.
+
+                        const existingAddressNode = officerAddressNodes.find(n => n.data.label === addressLabel) ||
+                            (addressLabel === formatAddress(company.registered_office_address) ? companyNode : null); // Check if matches company address? No, companyNode is a company.
+
+                        // Let's just make a new address node if it doesn't exist in our list
+                        let addressNodeId = `address-${addressLabel.replace(/\s+/g, '-').toLowerCase().slice(0, 20)}-${index}`; // simple ID generation
+
+                        // Better ID strategy: hash or just use the label if unique enough?
+                        // Let's use a prefix and simple check.
+                        const foundNode = officerAddressNodes.find(n => n.data.label === addressLabel);
+
+                        if (foundNode) {
+                            addressNodeId = foundNode.id;
+                        } else {
+                            // Check if it matches the main company address?
+                            const companyAddressLabel = formatAddress(company.registered_office_address);
+                            if (addressLabel === companyAddressLabel) {
+                                // If it matches company address, do we link to the existing company address node?
+                                // The existing code creates 'address-1' for company address.
+                                addressNodeId = 'address-1';
+                            } else {
+                                addressNodeId = `address-${index}-${officer.officer_id || index}`; // Unique per officer for now to ensure "tightly under"? 
+                                // No, user said "same sidebar/ expand connection functionality like normal company addresses"
+                                // So it should be a proper address node.
+
+                                // Let's try to deduplicate globally if possible, but for now let's just add it.
+                                officerAddressNodes.push({
+                                    id: addressNodeId,
+                                    type: 'businessCard',
+                                    data: {
+                                        label: addressLabel,
+                                        role: 'Correspondence Address',
+                                        type: 'address',
+                                        source: { address: officer.address } // Mock source
+                                    },
+                                    position: { x: 0, y: 0 },
+                                });
+                            }
+                        }
+
+                        officerAddressEdges.push({
+                            id: `e-${officerId}-${addressNodeId}`,
+                            source: officerId,
+                            target: addressNodeId,
+                            type: 'smoothstep',
+                            animated: true,
+                            label: 'Correspondence',
+                            style: { stroke: '#94a3b8', strokeDasharray: '5,5' }, // Dashed for address?
+                            labelBgStyle: { fill: '#f8fafc' },
+                            labelStyle: { fill: '#64748b', fontWeight: 500 },
                         });
                     }
                 });
@@ -194,7 +274,7 @@ export function GraphCanvas() {
                     position: { x: 0, y: 0 },
                 };
 
-                const newNodes = [companyNode, ...officerNodes, ...pscNodes, addressNode];
+                const newNodes = [companyNode, ...officerNodes, ...pscNodes, addressNode, ...officerAddressNodes];
 
                 // Create Edges
                 const rawEdges: Edge[] = [
@@ -206,6 +286,8 @@ export function GraphCanvas() {
                         animated: true,
                         label: node.data.role, // Edge Label
                         style: { stroke: '#94a3b8' },
+                        labelBgStyle: { fill: '#f8fafc' },
+                        labelStyle: { fill: '#64748b', fontWeight: 500 },
                     })),
                     ...pscNodes.map((node) => ({
                         id: `e-${companyNode.id}-${node.id}`,
@@ -215,6 +297,8 @@ export function GraphCanvas() {
                         animated: true,
                         label: 'PSC', // Edge Label
                         style: { stroke: '#f59e0b' }, // Amber stroke for PSCs
+                        labelBgStyle: { fill: '#fffbeb' }, // Amber-50
+                        labelStyle: { fill: '#d97706', fontWeight: 700 },
                     })),
                     {
                         id: `e-${companyNode.id}-address-1`,
@@ -224,7 +308,10 @@ export function GraphCanvas() {
                         animated: true,
                         label: 'Registered Office', // Edge Label
                         style: { stroke: '#94a3b8' },
-                    }
+                        labelBgStyle: { fill: '#f8fafc' },
+                        labelStyle: { fill: '#64748b', fontWeight: 500 },
+                    },
+                    ...officerAddressEdges
                 ];
 
                 // Deduplicate edges just in case
@@ -257,6 +344,7 @@ export function GraphCanvas() {
     }, [query, setNodes, setEdges, layoutDirection]);
 
     const [selectedNode, setSelectedNode] = React.useState<Node | null>(null);
+    const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
     const [isDialogOpen, setIsDialogOpen] = React.useState(false);
 
     // Customization State
@@ -270,6 +358,111 @@ export function GraphCanvas() {
         setNotes(node.data.notes || "");
         setIsDialogOpen(true);
     }, []);
+
+    // Interaction Handlers
+    const onNodeMouseEnter = useCallback((event: React.MouseEvent, node: Node) => {
+        setHoveredNodeId(node.id);
+    }, []);
+
+    const onNodeMouseLeave = useCallback((event: React.MouseEvent, node: Node) => {
+        setHoveredNodeId(null);
+    }, []);
+
+    const onPaneClick = useCallback(() => {
+        setSelectedNode(null);
+        setIsDialogOpen(false);
+    }, []);
+
+    // Derived state for highlighting
+    const { styledNodes, styledEdges } = useMemo(() => {
+        const activeNodeId = hoveredNodeId || selectedNode?.id;
+
+        if (!activeNodeId) {
+            return { styledNodes: nodes, styledEdges: edges };
+        }
+
+        // Context-Aware BFS
+        // Rule: Do not traverse THROUGH a company node to find other nodes, unless the company node is the start node.
+        // This allows finding "Shared Address" connections (Director -> Address -> Director)
+        // but prevents finding "Shared Company" connections (Director -> Company -> All Other Directors)
+
+        const connectedNodeIds = new Set<string>();
+        const connectedEdgeIds = new Set<string>();
+        const queue: string[] = [activeNodeId];
+        connectedNodeIds.add(activeNodeId);
+
+        // Build adjacency list
+        const adjacency = new Map<string, Array<{ nodeId: string, edgeId: string }>>();
+        edges.forEach(edge => {
+            if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
+            if (!adjacency.has(edge.target)) adjacency.set(edge.target, []);
+
+            adjacency.get(edge.source)?.push({ nodeId: edge.target, edgeId: edge.id });
+            adjacency.get(edge.target)?.push({ nodeId: edge.source, edgeId: edge.id });
+        });
+
+        while (queue.length > 0) {
+            const currId = queue.shift()!;
+            const currNode = nodes.find(n => n.id === currId);
+
+            // Stop traversal if we are at a company node, UNLESS it is the start node
+            // We still want to highlight the company node itself (which is why we added it to connectedNodeIds before queueing)
+            // but we don't want to push its neighbors.
+            if (currNode?.data?.type === 'company' && currId !== activeNodeId) {
+                continue;
+            }
+
+            const neighbors = adjacency.get(currId) || [];
+
+            for (const { nodeId, edgeId } of neighbors) {
+                connectedEdgeIds.add(edgeId);
+
+                if (!connectedNodeIds.has(nodeId)) {
+                    connectedNodeIds.add(nodeId);
+                    queue.push(nodeId);
+                }
+            }
+        }
+
+        // Ensure edges between any two highlighted nodes are visible (e.g. Director -> Company)
+        // This covers the case where we stopped at Company, but we still want the edge pointing to it.
+        // (Actually the loop above adds edges as it traverses, so edges TO the company are added. 
+        // Edges FROM the company to unvisited nodes are skipped.)
+        // But if we have Director A -> Company and Director B -> Company, and both Directors are highlighted (via address),
+        // we want both edges to be highlighted.
+        edges.forEach(edge => {
+            if (connectedNodeIds.has(edge.source) && connectedNodeIds.has(edge.target)) {
+                connectedEdgeIds.add(edge.id);
+            }
+        });
+
+        const newStyledNodes = nodes.map((node) => {
+            const isConnected = connectedNodeIds.has(node.id);
+            return {
+                ...node,
+                style: {
+                    ...node.style,
+                    opacity: isConnected ? 1 : 0.2,
+                    transition: 'opacity 0.2s ease-in-out'
+                }
+            };
+        });
+
+        const newStyledEdges = edges.map((edge) => {
+            const isConnected = connectedEdgeIds.has(edge.id);
+            return {
+                ...edge,
+                style: {
+                    ...edge.style,
+                    opacity: isConnected ? 1 : 0.1,
+                    stroke: isConnected ? '#94a3b8' : '#cbd5e1',
+                    transition: 'opacity 0.2s ease-in-out'
+                }
+            };
+        });
+
+        return { styledNodes: newStyledNodes, styledEdges: newStyledEdges };
+    }, [nodes, edges, hoveredNodeId, selectedNode]);
 
     const handleSaveCustomization = () => {
         if (!selectedNode) return;
@@ -351,6 +544,8 @@ export function GraphCanvas() {
                                 animated: true,
                                 label: item.officer_role,
                                 style: { stroke: '#94a3b8' },
+                                labelBgStyle: { fill: '#f8fafc' },
+                                labelStyle: { fill: '#64748b', fontWeight: 500 },
                             });
                         }
                         return;
@@ -374,6 +569,8 @@ export function GraphCanvas() {
                                 animated: true,
                                 label: 'Registered Office',
                                 style: { stroke: '#94a3b8' },
+                                labelBgStyle: { fill: '#f8fafc' },
+                                labelStyle: { fill: '#64748b', fontWeight: 500 },
                             };
                         }
                     }
@@ -404,6 +601,8 @@ export function GraphCanvas() {
                         animated: true,
                         label: item.officer_role,
                         style: { stroke: '#94a3b8' },
+                        labelBgStyle: { fill: '#f8fafc' },
+                        labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
 
                     if (addressEdge) newEdges.push(addressEdge);
@@ -430,8 +629,13 @@ export function GraphCanvas() {
                                 animated: true,
                                 label: officer.officer_role,
                                 style: { stroke: '#94a3b8' },
+                                labelBgStyle: { fill: '#f8fafc' },
+                                labelStyle: { fill: '#64748b', fontWeight: 500 },
                             });
                         }
+                        // Check for address node even if officer exists? 
+                        // If officer exists, their address node might not be loaded if they were loaded from a different context (unlikely in this app flow but possible).
+                        // Let's skip for now to avoid complexity.
                         return;
                     }
 
@@ -450,6 +654,7 @@ export function GraphCanvas() {
                             nationality: officer.nationality,
                             occupation: officer.occupation,
                             country_of_residence: officer.country_of_residence,
+                            address: formatAddress(officer.address),
                             source: officer
                         },
                         position: { x: 0, y: 0 },
@@ -466,7 +671,57 @@ export function GraphCanvas() {
                         animated: true,
                         label: officer.officer_role,
                         style: { stroke: '#94a3b8' },
+                        labelBgStyle: { fill: '#f8fafc' },
+                        labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
+
+                    // Add Address Node for this new officer
+                    if (officer.address) {
+                        const addressLabel = formatAddress(officer.address);
+                        if (addressLabel) {
+                            // Check if address node already exists in currentNodes or newNodes
+                            let addressNodeId = `address-${addressLabel.replace(/\s+/g, '-').toLowerCase().slice(0, 20)}-${index}`;
+
+                            // Simple dedupe check against current graph
+                            const existingAddress = currentNodes.find(n => n.data.type === 'address' && n.data.label === addressLabel);
+                            if (existingAddress) {
+                                addressNodeId = existingAddress.id;
+                            } else {
+                                // Check newNodes
+                                const newAddress = newNodes.find(n => n.data.type === 'address' && n.data.label === addressLabel);
+                                if (newAddress) {
+                                    addressNodeId = newAddress.id;
+                                } else {
+                                    // Create new address node
+                                    const newAddressNode: Node = {
+                                        id: addressNodeId,
+                                        type: 'businessCard',
+                                        data: {
+                                            label: addressLabel,
+                                            role: 'Correspondence Address',
+                                            type: 'address',
+                                            source: { address: officer.address }
+                                        },
+                                        position: { x: 0, y: 0 },
+                                    };
+                                    newNodes.push(newAddressNode);
+                                    allNeighbors.push(newAddressNode);
+                                }
+                            }
+
+                            newEdges.push({
+                                id: `e-${officerId}-${addressNodeId}`,
+                                source: officerId,
+                                target: addressNodeId,
+                                type: 'smoothstep',
+                                animated: true,
+                                label: 'Correspondence',
+                                style: { stroke: '#94a3b8', strokeDasharray: '5,5' },
+                                labelBgStyle: { fill: '#f8fafc' },
+                                labelStyle: { fill: '#64748b', fontWeight: 500 },
+                            });
+                        }
+                    }
                 });
             }
         } else if (nodeToExpand.data.type === 'address') {
@@ -511,6 +766,8 @@ export function GraphCanvas() {
                         animated: true,
                         label: 'Registered At',
                         style: { stroke: '#94a3b8' },
+                        labelBgStyle: { fill: '#f8fafc' },
+                        labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
                 });
             }
@@ -593,6 +850,43 @@ export function GraphCanvas() {
         }
     };
 
+    const downloadImage = () => {
+        const nodes = getNodes();
+
+        // 1. Get the bounding box of all nodes
+        const nodesBounds = getRectOfNodes(nodes);
+
+        // 2. Calculate dimensions with some padding
+        const padding = 50;
+        const imageWidth = nodesBounds.width + (padding * 2);
+        const imageHeight = nodesBounds.height + (padding * 2);
+
+        // 3. Calculate the transform to fit the nodes into the new image dimensions
+        // This effectively centers the graph and ensures scale is appropriate (close to 1)
+        const transform = getTransformForBounds(nodesBounds, imageWidth, imageHeight, 0.5, 2);
+
+        const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+
+        if (viewport) {
+            toPng(viewport, {
+                backgroundColor: '#f8fafc', // slate-50
+                width: imageWidth,
+                height: imageHeight,
+                style: {
+                    width: String(imageWidth),
+                    height: String(imageHeight),
+                    // Apply the transform to shift the graph into view and scale it
+                    transform: `translate(${transform[0]}px, ${transform[1]}px) scale(${transform[2]})`,
+                },
+            }).then((dataUrl) => {
+                const link = document.createElement('a');
+                link.download = 'company-map.png';
+                link.href = dataUrl;
+                link.click();
+            });
+        }
+    };
+
     if (error) {
         return (
             <div className="h-full w-full flex items-center justify-center bg-slate-50">
@@ -608,12 +902,15 @@ export function GraphCanvas() {
     return (
         <div className="h-full w-full bg-slate-50 relative overflow-hidden">
             <ReactFlow
-                nodes={nodes}
-                edges={edges}
+                nodes={styledNodes}
+                edges={styledEdges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
                 onNodeClick={onNodeClick}
+                onNodeMouseEnter={onNodeMouseEnter}
+                onNodeMouseLeave={onNodeMouseLeave}
+                onPaneClick={onPaneClick}
                 nodeTypes={nodeTypes}
                 fitView
                 className="bg-slate-50"
@@ -623,11 +920,12 @@ export function GraphCanvas() {
 
                 {/* Title Panel */}
                 <Panel position="top-left" className="bg-white p-2 rounded-lg shadow-md border border-slate-200">
-                    <h1 className="text-lg font-bold text-slate-900 leading-tight px-2">Company Mapper</h1>
+                    <h1 className="text-lg font-bold leading-tight px-2" style={{ color: '#132B5C' }}>Company Map</h1>
+                    <p className="text-[10px] text-slate-400 px-2 font-medium">Dylan Wordley - ComMap V.1</p>
                 </Panel>
 
                 {/* Search Panel */}
-                <Panel position="top-center" className="bg-white p-2 rounded-lg shadow-md border border-slate-200 flex gap-2 w-[400px]">
+                <Panel position="top-center" className="bg-white p-2 rounded-lg shadow-md border border-slate-200 flex flex-col gap-2 w-[400px]">
                     <form
                         onSubmit={(e) => {
                             e.preventDefault();
@@ -648,10 +946,13 @@ export function GraphCanvas() {
                             placeholder="Search Company..."
                             className="flex-1 px-3 py-1 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
                         />
-                        <Button type="submit" size="sm" className="bg-slate-900 text-white hover:bg-slate-800">
+                        <Button type="submit" size="sm" className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90">
                             Search
                         </Button>
                     </form>
+                    <p className="text-[10px] text-slate-400 text-center px-1">
+                        Please only enter a company name/number, do not input any internal data or customer PII.
+                    </p>
                 </Panel>
                 <Panel position="top-right" className="flex gap-2">
                     {/* Level Expansion Dropdown */}
@@ -664,7 +965,6 @@ export function GraphCanvas() {
                         >
                             <option value={1}>Level 1</option>
                             <option value={2}>Level 2</option>
-                            <option value={3}>Level 3</option>
                         </select>
                     </div>
 
@@ -673,7 +973,7 @@ export function GraphCanvas() {
                         size="sm"
                         onClick={handleExpandNetwork}
                         disabled={!selectedNode || loading}
-                        className="bg-slate-900 text-white hover:bg-slate-800 disabled:opacity-50 shadow-sm"
+                        className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90 disabled:opacity-50 shadow-sm"
                         title={selectedNode ? `Expand ${selectedNode.data.label}` : "Select a node to expand"}
                     >
                         {loading ? "Loading..." : (!selectedNode ? "Select Node" : "Expand")}
@@ -705,6 +1005,15 @@ export function GraphCanvas() {
                         title="Auto Align"
                     >
                         <RefreshCw className="h-4 w-4 text-slate-700" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={downloadImage}
+                        className="bg-white border-slate-200 hover:bg-slate-50"
+                        title="Download Screenshot"
+                    >
+                        <Camera className="h-4 w-4 text-slate-700" />
                     </Button>
                 </Panel>
             </ReactFlow>
@@ -749,5 +1058,13 @@ export function GraphCanvas() {
                 }}
             />
         </div>
+    );
+}
+
+export function GraphCanvas() {
+    return (
+        <ReactFlowProvider>
+            <GraphCanvasContent />
+        </ReactFlowProvider>
     );
 }
