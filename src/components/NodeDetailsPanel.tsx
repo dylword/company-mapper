@@ -301,24 +301,52 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                                 <MapPin className="h-4 w-4 text-slate-400" />
                                 Registered Address
                             </h3>
-                            {/* Placeholder for "View on Map" action */}
-                            <button className="text-xs text-blue-600 font-medium hover:underline flex items-center gap-1">
+                            {/* "View on Map" action */}
+                            <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                                    isAddress ? data.label : [
+                                        data.source?.registered_office_address?.address_line_1,
+                                        data.source?.registered_office_address?.address_line_2,
+                                        data.source?.registered_office_address?.locality,
+                                        data.source?.registered_office_address?.postal_code,
+                                        data.source?.registered_office_address?.country
+                                    ].filter(Boolean).join(', ')
+                                )}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-xs text-blue-600 font-medium hover:underline flex items-center gap-1"
+                            >
                                 View Map <ExternalLink className="h-3 w-3" />
-                            </button>
+                            </a>
                         </div>
 
-                        {/* Map Visual Placeholder */}
-                        <div className="h-24 bg-slate-100 rounded-lg border border-slate-200 flex items-center justify-center relative overflow-hidden group">
-                            <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:8px_8px]"></div>
-                            <MapPin className="h-6 w-6 text-slate-400" />
+                        {/* Map Visual Embedded */}
+                        <div className="h-40 bg-slate-100 rounded-lg border border-slate-200 relative overflow-hidden group">
+                            <iframe
+                                width="100%"
+                                height="100%"
+                                style={{ border: 0 }}
+                                loading="lazy"
+                                allowFullScreen
+                                src={`https://maps.google.com/maps?q=${encodeURIComponent(
+                                    isAddress ? data.label : [
+                                        data.source?.registered_office_address?.address_line_1,
+                                        data.source?.registered_office_address?.address_line_2,
+                                        data.source?.registered_office_address?.locality,
+                                        data.source?.registered_office_address?.postal_code,
+                                        data.source?.registered_office_address?.country
+                                    ].filter(Boolean).join(', ')
+                                )}&t=&z=14&ie=UTF8&iwloc=&output=embed`}
+                            ></iframe>
                         </div>
 
                         <p className="text-sm text-slate-600 leading-relaxed">
-                            {data.source?.registered_office_address?.address_line_1}<br />
-                            {data.source?.registered_office_address?.address_line_2 && <>{data.source.registered_office_address.address_line_2}<br /></>}
-                            {data.source?.registered_office_address?.locality}<br />
-                            {data.source?.registered_office_address?.postal_code}<br />
-                            {data.source?.registered_office_address?.country}
+                            {data.source?.registered_office_address?.address_line_1 || (isAddress && data.source?.address?.address_line_1)}<br />
+                            {(data.source?.registered_office_address?.address_line_2 || (isAddress && data.source?.address?.address_line_2)) &&
+                                <>{data.source?.registered_office_address?.address_line_2 || data.source?.address?.address_line_2}<br /></>}
+                            {data.source?.registered_office_address?.locality || (isAddress && data.source?.address?.locality)}<br />
+                            {data.source?.registered_office_address?.postal_code || (isAddress && data.source?.address?.postal_code)}<br />
+                            {data.source?.registered_office_address?.country || (isAddress && data.source?.address?.country)}
                         </p>
                     </div>
                 )}

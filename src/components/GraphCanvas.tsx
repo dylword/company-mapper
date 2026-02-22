@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo } from 'react';
 import ReactFlow, {
+    MarkerType,
     useNodesState,
     useEdgesState,
     addEdge,
@@ -17,12 +18,13 @@ import ReactFlow, {
     getRectOfNodes,
     getTransformForBounds,
 } from 'reactflow';
-import { ArrowDown, ArrowRight, RefreshCw, Camera } from 'lucide-react';
+import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2 } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import 'reactflow/dist/style.css';
 
 import { Button } from "@/components/ui/button"
 import BusinessCardNode from './nodes/BusinessCardNode';
+import FloatingEdge from './edges/FloatingEdge';
 import { NodeDetailsPanel } from './NodeDetailsPanel';
 import { getLayoutedElements } from '@/lib/layout';
 import { cn, formatDate } from '@/lib/utils';
@@ -30,6 +32,10 @@ import { useSearchParams } from 'next/navigation';
 
 const nodeTypes = {
     businessCard: BusinessCardNode,
+};
+
+const edgeTypes = {
+    floating: FloatingEdge,
 };
 
 function GraphCanvasContent() {
@@ -40,7 +46,7 @@ function GraphCanvasContent() {
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
     const [error, setError] = React.useState<string | null>(null);
-    const [layoutDirection, setLayoutDirection] = React.useState('TB');
+    const [layoutDirection, setLayoutDirection] = React.useState('FORCE');
 
     const onConnect = useCallback(
         (params: Connection) => setEdges((eds) => addEdge(params, eds)),
@@ -228,10 +234,11 @@ function GraphCanvasContent() {
                             id: `e-${officerId}-${addressNodeId}`,
                             source: officerId,
                             target: addressNodeId,
-                            type: 'smoothstep',
+                            type: 'floating',
                             animated: true,
                             label: 'Correspondence',
-                            style: { stroke: '#94a3b8', strokeDasharray: '5,5' }, // Dashed for address?
+                            markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                            style: { stroke: '#000000', strokeDasharray: '5,5' }, // Dashed for address?
                             labelBgStyle: { fill: '#f8fafc' },
                             labelStyle: { fill: '#64748b', fontWeight: 500 },
                         });
@@ -282,10 +289,10 @@ function GraphCanvasContent() {
                         id: `e-${companyNode.id}-${node.id}`,
                         source: companyNode.id,
                         target: node.id,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: node.data.role, // Edge Label
-                        style: { stroke: '#94a3b8' },
+                        style: { stroke: '#000000' },
                         labelBgStyle: { fill: '#f8fafc' },
                         labelStyle: { fill: '#64748b', fontWeight: 500 },
                     })),
@@ -293,7 +300,7 @@ function GraphCanvasContent() {
                         id: `e-${companyNode.id}-${node.id}`,
                         source: companyNode.id,
                         target: node.id,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: 'PSC', // Edge Label
                         style: { stroke: '#f59e0b' }, // Amber stroke for PSCs
@@ -304,10 +311,10 @@ function GraphCanvasContent() {
                         id: `e-${companyNode.id}-address-1`,
                         source: companyNode.id,
                         target: addressNode.id,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: 'Registered Office', // Edge Label
-                        style: { stroke: '#94a3b8' },
+                        style: { stroke: '#000000' },
                         labelBgStyle: { fill: '#f8fafc' },
                         labelStyle: { fill: '#64748b', fontWeight: 500 },
                     },
@@ -373,25 +380,22 @@ function GraphCanvasContent() {
         setIsDialogOpen(false);
     }, []);
 
-    // Derived state for highlighting
-    const { styledNodes, styledEdges } = useMemo(() => {
+    // Highlight effect
+    useEffect(() => {
         const activeNodeId = hoveredNodeId || selectedNode?.id;
 
         if (!activeNodeId) {
-            return { styledNodes: nodes, styledEdges: edges };
+            // Reset opacity
+            setNodes((nds) => nds.map((n) => ({ ...n, style: { ...n.style, opacity: 1 } })));
+            setEdges((eds) => eds.map((e) => ({ ...e, style: { ...e.style, opacity: 1, stroke: '#000000' } })));
+            return;
         }
-
-        // Context-Aware BFS
-        // Rule: Do not traverse THROUGH a company node to find other nodes, unless the company node is the start node.
-        // This allows finding "Shared Address" connections (Director -> Address -> Director)
-        // but prevents finding "Shared Company" connections (Director -> Company -> All Other Directors)
 
         const connectedNodeIds = new Set<string>();
         const connectedEdgeIds = new Set<string>();
         const queue: string[] = [activeNodeId];
         connectedNodeIds.add(activeNodeId);
 
-        // Build adjacency list
         const adjacency = new Map<string, Array<{ nodeId: string, edgeId: string }>>();
         edges.forEach(edge => {
             if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
@@ -405,9 +409,6 @@ function GraphCanvasContent() {
             const currId = queue.shift()!;
             const currNode = nodes.find(n => n.id === currId);
 
-            // Stop traversal if we are at a company node, UNLESS it is the start node
-            // We still want to highlight the company node itself (which is why we added it to connectedNodeIds before queueing)
-            // but we don't want to push its neighbors.
             if (currNode?.data?.type === 'company' && currId !== activeNodeId) {
                 continue;
             }
@@ -424,20 +425,16 @@ function GraphCanvasContent() {
             }
         }
 
-        // Ensure edges between any two highlighted nodes are visible (e.g. Director -> Company)
-        // This covers the case where we stopped at Company, but we still want the edge pointing to it.
-        // (Actually the loop above adds edges as it traverses, so edges TO the company are added. 
-        // Edges FROM the company to unvisited nodes are skipped.)
-        // But if we have Director A -> Company and Director B -> Company, and both Directors are highlighted (via address),
-        // we want both edges to be highlighted.
         edges.forEach(edge => {
             if (connectedNodeIds.has(edge.source) && connectedNodeIds.has(edge.target)) {
                 connectedEdgeIds.add(edge.id);
             }
         });
 
-        const newStyledNodes = nodes.map((node) => {
+        setNodes((nds) => nds.map((node) => {
             const isConnected = connectedNodeIds.has(node.id);
+            if (node.style?.opacity === (isConnected ? 1 : 0.2)) return node; // Skip unnecessary updates
+
             return {
                 ...node,
                 style: {
@@ -446,23 +443,24 @@ function GraphCanvasContent() {
                     transition: 'opacity 0.2s ease-in-out'
                 }
             };
-        });
+        }));
 
-        const newStyledEdges = edges.map((edge) => {
+        setEdges((eds) => eds.map((edge) => {
             const isConnected = connectedEdgeIds.has(edge.id);
+            const defaultStroke = '#000000';
+            if (edge.style?.opacity === (isConnected ? 1 : 0.1)) return edge; // Skip unnecessary updates
+
             return {
                 ...edge,
                 style: {
                     ...edge.style,
                     opacity: isConnected ? 1 : 0.1,
-                    stroke: isConnected ? '#94a3b8' : '#cbd5e1',
+                    stroke: isConnected ? defaultStroke : '#cbd5e1',
                     transition: 'opacity 0.2s ease-in-out'
                 }
             };
-        });
-
-        return { styledNodes: newStyledNodes, styledEdges: newStyledEdges };
-    }, [nodes, edges, hoveredNodeId, selectedNode]);
+        }));
+    }, [hoveredNodeId, selectedNode?.id]); // Note: explicitly NOT depending on `nodes` or `edges` array contents
 
     const handleSaveCustomization = () => {
         if (!selectedNode) return;
@@ -540,10 +538,11 @@ function GraphCanvasContent() {
                                 id: edgeId,
                                 source: nodeToExpand.id,
                                 target: nodeId,
-                                type: 'smoothstep',
+                                type: 'floating',
                                 animated: true,
                                 label: item.officer_role,
-                                style: { stroke: '#94a3b8' },
+                                markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                                style: { stroke: '#000000' },
                                 labelBgStyle: { fill: '#f8fafc' },
                                 labelStyle: { fill: '#64748b', fontWeight: 500 },
                             });
@@ -565,10 +564,11 @@ function GraphCanvasContent() {
                                 id: `e-${nodeId}-${existingAddressNode.id}`,
                                 source: nodeId,
                                 target: existingAddressNode.id,
-                                type: 'smoothstep',
+                                type: 'floating',
                                 animated: true,
                                 label: 'Registered Office',
-                                style: { stroke: '#94a3b8' },
+                                markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                                style: { stroke: '#000000' },
                                 labelBgStyle: { fill: '#f8fafc' },
                                 labelStyle: { fill: '#64748b', fontWeight: 500 },
                             };
@@ -597,10 +597,11 @@ function GraphCanvasContent() {
                         id: `e-${nodeToExpand.id}-${nodeId}`,
                         source: nodeToExpand.id,
                         target: nodeId,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: item.officer_role,
-                        style: { stroke: '#94a3b8' },
+                        markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                        style: { stroke: '#000000' },
                         labelBgStyle: { fill: '#f8fafc' },
                         labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
@@ -625,10 +626,11 @@ function GraphCanvasContent() {
                                 id: edgeId,
                                 source: nodeToExpand.id,
                                 target: officerId,
-                                type: 'smoothstep',
+                                type: 'floating',
                                 animated: true,
                                 label: officer.officer_role,
-                                style: { stroke: '#94a3b8' },
+                                markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                                style: { stroke: '#000000' },
                                 labelBgStyle: { fill: '#f8fafc' },
                                 labelStyle: { fill: '#64748b', fontWeight: 500 },
                             });
@@ -667,10 +669,11 @@ function GraphCanvasContent() {
                         id: `e-${nodeToExpand.id}-${officerId}`,
                         source: nodeToExpand.id,
                         target: officerId,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: officer.officer_role,
-                        style: { stroke: '#94a3b8' },
+                        markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                        style: { stroke: '#000000' },
                         labelBgStyle: { fill: '#f8fafc' },
                         labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
@@ -713,10 +716,11 @@ function GraphCanvasContent() {
                                 id: `e-${officerId}-${addressNodeId}`,
                                 source: officerId,
                                 target: addressNodeId,
-                                type: 'smoothstep',
+                                type: 'floating',
                                 animated: true,
                                 label: 'Correspondence',
-                                style: { stroke: '#94a3b8', strokeDasharray: '5,5' },
+                                markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                                style: { stroke: '#000000', strokeDasharray: '5,5' },
                                 labelBgStyle: { fill: '#f8fafc' },
                                 labelStyle: { fill: '#64748b', fontWeight: 500 },
                             });
@@ -762,10 +766,11 @@ function GraphCanvasContent() {
                         id: `e-${nodeToExpand.id}-${nodeId}`,
                         source: nodeToExpand.id,
                         target: nodeId,
-                        type: 'smoothstep',
+                        type: 'floating',
                         animated: true,
                         label: 'Registered At',
-                        style: { stroke: '#94a3b8' },
+                        markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+                        style: { stroke: '#000000' },
                         labelBgStyle: { fill: '#f8fafc' },
                         labelStyle: { fill: '#64748b', fontWeight: 500 },
                     });
@@ -850,6 +855,62 @@ function GraphCanvasContent() {
         }
     };
 
+    const handleDeleteSelected = () => {
+        const selectedNodesIds = new Set(nodes.filter(n => n.selected).map(n => n.id));
+        if (selectedNodesIds.size === 0) return;
+
+        setNodes(nds => nds.filter(n => !selectedNodesIds.has(n.id)));
+        setEdges(eds => eds.filter(e => !selectedNodesIds.has(e.source) && !selectedNodesIds.has(e.target)));
+        // If the currently viewed details panel corresponds to a deleted node, close it
+        if (selectedNode && selectedNodesIds.has(selectedNode.id)) {
+            setSelectedNode(null);
+            setIsDialogOpen(false);
+        }
+    };
+
+    const handleDeleteBranch = () => {
+        const selectedNodesIds = new Set(nodes.filter(n => n.selected).map(n => n.id));
+        if (selectedNodesIds.size === 0) return;
+
+        const nodesToDelete = new Set(selectedNodesIds);
+
+        // Build adjacency to quickly find degrees
+        const adjacency = new Map<string, string[]>();
+        nodes.forEach(n => adjacency.set(n.id, []));
+
+        edges.forEach(e => {
+            if (adjacency.has(e.source) && adjacency.has(e.target)) {
+                adjacency.get(e.source)!.push(e.target);
+                adjacency.get(e.target)!.push(e.source);
+            }
+        });
+
+        // Breadth-first-search style pruning to find sub-nodes that ONLY connect back to the nodes being deleted
+        let addedNew = true;
+        while (addedNew) {
+            addedNew = false;
+
+            for (const [nodeId, neighbors] of Array.from(adjacency.entries())) {
+                if (!nodesToDelete.has(nodeId)) {
+                    if (neighbors.length > 0) {
+                        const allNeighborsBeingDeleted = neighbors.every(neighborId => nodesToDelete.has(neighborId));
+                        if (allNeighborsBeingDeleted) {
+                            nodesToDelete.add(nodeId);
+                            addedNew = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        setNodes(nds => nds.filter(n => !nodesToDelete.has(n.id)));
+        setEdges(eds => eds.filter(e => !nodesToDelete.has(e.source) && !nodesToDelete.has(e.target)));
+        if (selectedNode && nodesToDelete.has(selectedNode.id)) {
+            setSelectedNode(null);
+            setIsDialogOpen(false);
+        }
+    };
+
     const downloadImage = () => {
         const nodes = getNodes();
 
@@ -902,8 +963,9 @@ function GraphCanvasContent() {
     return (
         <div className="h-full w-full bg-slate-50 relative overflow-hidden">
             <ReactFlow
-                nodes={styledNodes}
-                edges={styledEdges}
+                nodes={nodes}
+                edgeTypes={edgeTypes}
+                edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
@@ -979,6 +1041,31 @@ function GraphCanvasContent() {
                         {loading ? "Loading..." : (!selectedNode ? "Select Node" : "Expand")}
                     </Button>
 
+                    <div className="w-px h-8 bg-slate-200 mx-1 self-center" />
+
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={handleDeleteSelected}
+                        disabled={!nodes.some(n => n.selected)}
+                        className="bg-white border-slate-200 hover:bg-red-50 text-red-600 hover:text-red-700 hover:border-red-200 disabled:opacity-50"
+                        title="Delete Selected"
+                    >
+                        <Trash className="h-4 w-4" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={handleDeleteBranch}
+                        disabled={!nodes.some(n => n.selected)}
+                        className="bg-white border-slate-200 hover:bg-red-50 text-red-600 hover:text-red-700 hover:border-red-200 disabled:opacity-50"
+                        title="Delete Selected & Isolated Sub-branches"
+                    >
+                        <Trash2 className="h-4 w-4" />
+                    </Button>
+
+                    <div className="w-px h-8 bg-slate-200 mx-1 self-center" />
+
                     <Button
                         variant="outline"
                         size="icon"
@@ -1005,6 +1092,15 @@ function GraphCanvasContent() {
                         title="Auto Align"
                     >
                         <RefreshCw className="h-4 w-4 text-slate-700" />
+                    </Button>
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        onClick={() => onLayout('RADIAL')}
+                        className="bg-white border-slate-200 hover:bg-slate-50"
+                        title="Radial Layout"
+                    >
+                        <Circle className="h-4 w-4 text-slate-700" />
                     </Button>
                     <Button
                         variant="outline"

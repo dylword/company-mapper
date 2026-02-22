@@ -12,7 +12,7 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
             case 'officer': return 'bg-emerald-500';
             case 'address': return 'bg-slate-500';
             case 'psc': return 'bg-amber-500';
-            default: return 'bg-slate-900'; // company
+            default: return 'bg-[#132B5C]'; // company
         }
     };
 
@@ -31,17 +31,18 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
     return (
         <div
             className={cn(
-                "relative w-[240px] bg-white rounded-md border border-slate-200 shadow-sm transition-all duration-200",
-                selected && "ring-2 ring-slate-900 ring-offset-2 shadow-md"
+                "w-[240px] bg-white rounded-md border border-slate-200 transition-all duration-200",
+                "shadow-[0px_4px_9px_0px_rgba(23,26,31,0.11),0px_0px_2px_0px_rgba(23,26,31,0.12)]", // Finspye shadow
+                selected && "ring-2 ring-[#132B5C] ring-offset-2 shadow-md"
             )}
         >
-            {/* Left Accent Bar */}
+            {/* Top Accent Bar (Replaces left accent to look more like a premium card) */}
             <div
-                className={cn("absolute left-0 top-0 bottom-0 w-1.5 rounded-l-md", !data.customColor && getAccentColor())}
+                className={cn("h-1.5 w-full rounded-t-md", !data.customColor && getAccentColor())}
                 style={data.customColor ? { backgroundColor: data.customColor } : undefined}
             />
 
-            <div className="pl-5 pr-4 py-3">
+            <div className="px-4 py-3">
                 {/* Header: Entity Name */}
                 <div className="flex items-start justify-between gap-2 mb-1">
                     <div className="font-bold text-slate-900 text-sm leading-tight line-clamp-2">
@@ -82,16 +83,19 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
                 )}
             </div>
 
-            {/* Handles */}
+            {/* Handles - Hidden but necessary for React Flow to connect edges.
+                Small, hidden, and non-interactive so they don't block node dragging. */}
             <Handle
                 type="target"
                 position={Position.Top}
-                className="!bg-slate-300 !w-2 !h-2 !border-0"
+                style={{ opacity: 0, pointerEvents: 'none' }}
+                isConnectable={false}
             />
             <Handle
                 type="source"
                 position={Position.Bottom}
-                className="!bg-slate-300 !w-2 !h-2 !border-0"
+                style={{ opacity: 0, pointerEvents: 'none' }}
+                isConnectable={false}
             />
         </div>
     );

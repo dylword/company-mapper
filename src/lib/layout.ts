@@ -1,17 +1,131 @@
 import dagre from 'dagre';
 import { Node, Edge, Position } from 'reactflow';
+import * as d3 from 'd3-force';
 
 const nodeWidth = 240;
 const nodeHeight = 80;
 
-export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'TB') => {
+export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'FORCE') => {
+    if (direction === 'FORCE') {
+        // Clone nodes and edges for simulation
+        const simNodes = nodes.map((node) => ({
+            ...node,
+            x: node.position.x || Math.random() * 800,
+            y: node.position.y || Math.random() * 600,
+        }));
+
+        // Ensure links reference indices or string IDs that match node IDs
+        const simLinks = edges.map((edge) => ({
+            ...edge,
+            source: simNodes.find((n) => n.id === edge.source),
+            target: simNodes.find((n) => n.id === edge.target),
+        })).filter(link => link.source && link.target); // Safety filter
+
+        // Run simulation synchronously
+        // Initialize nodes farther apart so they don't get tangled
+        simNodes.forEach(node => {
+            node.x = node.x || (Math.random() - 0.5) * 2000;
+            node.y = node.y || (Math.random() - 0.5) * 2000;
+        });
+
+        const simulation = d3.forceSimulation(simNodes as any)
+            .force('link', d3.forceLink(simLinks as any).id((d: any) => d.id).distance(350).strength(0.5)) // Longer links
+            .force('charge', d3.forceManyBody().strength(-4000).distanceMax(1500)) // Massive repel to create spiderweb
+            .force('center', d3.forceCenter(0, 0)) // Center around 0,0
+            .force('collide', d3.forceCollide().radius(200).iterations(3)); // Prevent overlapping bounds
+
+        simulation.stop();
+        for (let i = 0; i < 400; i++) {
+            simulation.tick();
+        }
+
+        // Map positions back to React Flow nodes
+        const layoutedNodes = simNodes.map((simNode: any) => {
+            const node = nodes.find(n => n.id === simNode.id)!;
+            return {
+                ...node,
+                position: {
+                    x: simNode.x - nodeWidth / 2,
+                    y: simNode.y - nodeHeight / 2,
+                },
+                // Add handles all around for floating edges to attach nicely
+                targetPosition: Position.Top,
+                sourcePosition: Position.Bottom,
+            };
+        });
+
+        return { nodes: layoutedNodes, edges };
+    }
+
+    if (direction === 'RADIAL') {
+        const centerNode = nodes.find(n => n.data.type === 'company') || nodes[0];
+        if (!centerNode) return { nodes, edges };
+
+        // Reset positions for calculation
+        const layoutedNodes = nodes.map(node => ({ ...node }));
+
+        // BFS to determine levels
+        const levels = new Map<string, number>();
+        const queue = [{ id: centerNode.id, level: 0 }];
+        levels.set(centerNode.id, 0);
+        const visited = new Set<string>([centerNode.id]);
+
+        while (queue.length > 0) {
+            const { id, level } = queue.shift()!;
+
+            // Find neighbors
+            const neighbors = edges
+                .filter(e => e.source === id || e.target === id)
+                .map(e => e.source === id ? e.target : e.source);
+
+            for (const neighborId of neighbors) {
+                if (!visited.has(neighborId)) {
+                    visited.add(neighborId);
+                    levels.set(neighborId, level + 1);
+                    queue.push({ id: neighborId, level: level + 1 });
+                }
+            }
+        }
+
+        // Group nodes by level
+        const nodesByLevel = new Map<number, Node[]>();
+        layoutedNodes.forEach(node => {
+            const level = levels.get(node.id) ?? 1; // Default to 1 if disconnected
+            if (!nodesByLevel.has(level)) nodesByLevel.set(level, []);
+            nodesByLevel.get(level)!.push(node);
+        });
+
+        // Position nodes
+        const baseRadius = 500; // Sufficient radius to avoid text overlap
+
+        nodesByLevel.forEach((levelNodes, level) => {
+            if (level === 0) {
+                levelNodes[0].position = { x: 0, y: 0 };
+                return;
+            }
+
+            const radius = baseRadius * level;
+            const angleStep = (2 * Math.PI) / levelNodes.length;
+
+            levelNodes.forEach((node, index) => {
+                const angle = index * angleStep;
+                node.position = {
+                    x: radius * Math.cos(angle) - nodeWidth / 2,
+                    y: radius * Math.sin(angle) - nodeHeight / 2
+                };
+            });
+        });
+
+        return { nodes: layoutedNodes, edges };
+    }
+
     const dagreGraph = new dagre.graphlib.Graph();
     dagreGraph.setDefaultEdgeLabel(() => ({}));
 
     dagreGraph.setGraph({
         rankdir: direction,
         nodesep: 200,
-        ranksep: 120  // Increased slightly from 80 for better balance
+        ranksep: 120
     });
 
     nodes.forEach((node) => {
@@ -19,8 +133,6 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
     });
 
     edges.forEach((edge) => {
-        // "Correspondence" edges should be short (minlen: 1)
-        // All other edges should be longer to maintain spacing (minlen: 3)
         const isAddressEdge = edge.label === 'Correspondence' || edge.data?.type === 'address';
         dagreGraph.setEdge(edge.source, edge.target, {
             minlen: isAddressEdge ? 1 : 3
@@ -34,8 +146,6 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'T
         node.targetPosition = Position.Top;
         node.sourcePosition = Position.Bottom;
 
-        // We are shifting the dagre node position (anchor=center center) to the top left
-        // so it matches the React Flow node anchor point (top left).
         node.position = {
             x: nodeWithPosition.x - nodeWidth / 2,
             y: nodeWithPosition.y - nodeHeight / 2,
