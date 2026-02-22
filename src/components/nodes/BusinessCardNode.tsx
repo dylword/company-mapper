@@ -31,7 +31,7 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
     return (
         <div
             className={cn(
-                "w-[240px] bg-white rounded-md border border-slate-200 transition-all duration-200",
+                "group w-[240px] bg-white rounded-md border border-slate-200 transition-all duration-200 relative",
                 "shadow-[0px_4px_9px_0px_rgba(23,26,31,0.11),0px_0px_2px_0px_rgba(23,26,31,0.12)]", // Finspye shadow
                 selected && "ring-2 ring-[#132B5C] ring-offset-2 shadow-md"
             )}
@@ -83,19 +83,34 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
                 )}
             </div>
 
-            {/* Handles - Hidden but necessary for React Flow to connect edges.
-                Small, hidden, and non-interactive so they don't block node dragging. */}
+            {/* Interactive Handles for manual connections */}
             <Handle
                 type="target"
                 position={Position.Top}
-                style={{ opacity: 0, pointerEvents: 'none' }}
-                isConnectable={false}
+                id="top"
+                className="w-3 h-3 bg-slate-300 border-2 border-white opacity-70 hover:opacity-100 hover:bg-slate-500 hover:scale-150 transition-all cursor-crosshair"
+                isConnectable={true}
             />
             <Handle
                 type="source"
                 position={Position.Bottom}
-                style={{ opacity: 0, pointerEvents: 'none' }}
-                isConnectable={false}
+                id="bottom"
+                className="w-3 h-3 bg-slate-300 border-2 border-white opacity-70 hover:opacity-100 hover:bg-slate-500 hover:scale-150 transition-all cursor-crosshair"
+                isConnectable={true}
+            />
+            <Handle
+                type="source"
+                position={Position.Left}
+                id="left"
+                className="w-3 h-3 bg-slate-300 border-2 border-white opacity-70 hover:opacity-100 hover:bg-slate-500 hover:scale-150 transition-all cursor-crosshair"
+                isConnectable={true}
+            />
+            <Handle
+                type="source"
+                position={Position.Right}
+                id="right"
+                className="w-3 h-3 bg-slate-300 border-2 border-white opacity-70 hover:opacity-100 hover:bg-slate-500 hover:scale-150 transition-all cursor-crosshair"
+                isConnectable={true}
             />
         </div>
     );

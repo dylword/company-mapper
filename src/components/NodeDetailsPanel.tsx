@@ -16,6 +16,8 @@ interface NodeDetailsPanelProps {
 export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNodeUpdate }: NodeDetailsPanelProps) {
     const [customColor, setCustomColor] = useState("");
     const [notes, setNotes] = useState("");
+    const [editLabel, setEditLabel] = useState("");
+    const [editRole, setEditRole] = useState("");
     const [isLoadingDetails, setIsLoadingDetails] = useState(false);
 
     // Sync state with node when it changes
@@ -23,6 +25,8 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
         if (node) {
             setCustomColor(node.data.customColor || "");
             setNotes(node.data.notes || "");
+            setEditLabel(node.data.label || "");
+            setEditRole(node.data.role || "");
         }
     }, [node]);
 
@@ -32,23 +36,25 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
     // Fetch full details if missing (and officers/PSCs)
     useEffect(() => {
         if (!node || !isOpen) return;
-        const { data } = node;
+        const nodeId = node.id;
+        const nodeType = node.data.type;
+        const nodeSource = node.data.source;
 
         // Reset lists when node changes
         setCompanyOfficers([]);
         setCompanyPscs([]);
 
         // Check if it's a company
-        if (data.type === 'company') {
+        if (nodeType === 'company') {
             const fetchFullDetails = async () => {
                 setIsLoadingDetails(true);
                 try {
-                    const res = await fetch(`/api/company/${node.id}`);
+                    const res = await fetch(`/api/company/${nodeId}`);
                     const json = await res.json();
 
                     if (json.company) {
                         // Update node data if needed (existing logic)
-                        if (!data.source || !data.source.sic_codes) {
+                        if (!nodeSource || !nodeSource.sic_codes) {
                             onNodeUpdate({
                                 source: json.company,
                                 subtext: `Inc: ${json.company.date_of_creation}`,
@@ -69,7 +75,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
             };
             fetchFullDetails();
         }
-    }, [node, isOpen, onNodeUpdate]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [node?.id, isOpen]);
 
     const [linkedCompanies, setLinkedCompanies] = useState<any[]>([]);
     const [isLoadingLinked, setIsLoadingLinked] = useState(false);
@@ -77,13 +83,14 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
     // Fetch linked companies for officers/PSCs
     useEffect(() => {
         if (!node || !isOpen) return;
-        const { data } = node;
+        const nodeType = node.data.type;
+        const officerId = node.data.officer_id;
 
-        if ((data.type === 'officer' || data.type === 'psc') && data.officer_id) {
+        if ((nodeType === 'officer' || nodeType === 'psc') && officerId) {
             const fetchLinked = async () => {
                 setIsLoadingLinked(true);
                 try {
-                    const res = await fetch(`/api/officer/${data.officer_id}/appointments`);
+                    const res = await fetch(`/api/officer/${officerId}/appointments`);
                     const json = await res.json();
                     if (json.items) {
                         setLinkedCompanies(json.items);
@@ -98,7 +105,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
         } else {
             setLinkedCompanies([]);
         }
-    }, [node, isOpen]);
+    }, [node?.id, isOpen]);
 
     if (!node) return null;
 
@@ -107,6 +114,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
     const isOfficer = data.type === 'officer';
     const isPsc = data.type === 'psc';
     const isAddress = data.type === 'address';
+    const isCustom = data.isCustom;
 
     // Helper to format date
     const formatDate = (dateStr: string) => {
@@ -148,11 +156,35 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                             </span>
                         )}
                     </div>
-                    <h2 className="text-xl font-bold text-slate-900 leading-tight pr-4">{data.label}</h2>
-                    <p className="text-sm text-slate-500 flex items-center gap-1">
-                        {isCompany ? <Building2 className="h-3 w-3" /> : <User className="h-3 w-3" />}
-                        {data.role}
-                    </p>
+                    {isCustom ? (
+                        <div className="space-y-2 mt-2">
+                            <input
+                                type="text"
+                                value={editLabel}
+                                onChange={(e) => setEditLabel(e.target.value)}
+                                className="w-full text-xl font-bold text-slate-900 border-b border-slate-200 py-1 focus:outline-none focus:border-slate-800 bg-transparent"
+                                placeholder="Entity Name"
+                            />
+                            <div className="flex items-center gap-2">
+                                <Building2 className="h-3 w-3 text-slate-400" />
+                                <input
+                                    type="text"
+                                    value={editRole}
+                                    onChange={(e) => setEditRole(e.target.value)}
+                                    className="w-full text-sm text-slate-500 border-b border-slate-200 py-0.5 focus:outline-none focus:border-slate-800 bg-transparent"
+                                    placeholder="Entity Role (e.g., Target Company)"
+                                />
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            <h2 className="text-xl font-bold text-slate-900 leading-tight pr-4">{data.label}</h2>
+                            <p className="text-sm text-slate-500 flex items-center gap-1">
+                                {isCompany ? <Building2 className="h-3 w-3" /> : <User className="h-3 w-3" />}
+                                {data.role}
+                            </p>
+                        </>
+                    )}
                 </div>
                 <button
                     onClick={onClose}
@@ -450,11 +482,19 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
             </div>
 
             {/* Footer */}
-            <div className="p-6 border-t border-slate-100 bg-white flex flex-col gap-3">
-                <Button onClick={() => onSave(customColor, notes)} className="w-full bg-[#132B5C] text-white hover:bg-[#132B5C]/90">
+            <div className="p-6 border-t border-slate-100 bg-white flex gap-3">
+                <Button
+                    onClick={() => {
+                        if (isCustom) {
+                            onNodeUpdate({ label: editLabel, role: editRole });
+                        }
+                        onSave(customColor, notes);
+                    }}
+                    className="flex-1 bg-[#132B5C] text-white hover:bg-[#132B5C]/90"
+                >
                     Save Changes
                 </Button>
-                <Button variant="outline" onClick={onExpand} className="w-full border-slate-200 hover:bg-slate-50 text-slate-700">
+                <Button variant="outline" onClick={onExpand} className="flex-1 border-slate-200 hover:bg-slate-50 text-slate-700">
                     Expand Connections <ChevronRight className="ml-2 h-4 w-4" />
                 </Button>
             </div>

@@ -41,3 +41,7 @@ yarn-error.log*
 
 # agent state
 .claude/
+
+# images and logs
+image.png
+.next_dev_log.txt

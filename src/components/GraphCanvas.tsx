@@ -17,13 +17,15 @@ import ReactFlow, {
     ReactFlowProvider,
     getRectOfNodes,
     getTransformForBounds,
+    ConnectionMode,
 } from 'reactflow';
-import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2, PlusCircle, StickyNote } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import 'reactflow/dist/style.css';
 
 import { Button } from "@/components/ui/button"
 import BusinessCardNode from './nodes/BusinessCardNode';
+import NoteNode from './nodes/NoteNode';
 import FloatingEdge from './edges/FloatingEdge';
 import { NodeDetailsPanel } from './NodeDetailsPanel';
 import { getLayoutedElements } from '@/lib/layout';
@@ -32,6 +34,7 @@ import { useSearchParams } from 'next/navigation';
 
 const nodeTypes = {
     businessCard: BusinessCardNode,
+    noteNode: NoteNode,
 };
 
 const edgeTypes = {
@@ -41,7 +44,7 @@ const edgeTypes = {
 function GraphCanvasContent() {
     const searchParams = useSearchParams();
     const query = searchParams.get('q');
-    const { getNodes } = useReactFlow();
+    const { getNodes, getViewport, screenToFlowPosition } = useReactFlow();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
@@ -49,7 +52,13 @@ function GraphCanvasContent() {
     const [layoutDirection, setLayoutDirection] = React.useState('FORCE');
 
     const onConnect = useCallback(
-        (params: Connection) => setEdges((eds) => addEdge(params, eds)),
+        (params: Connection) => setEdges((eds) => addEdge({
+            ...params,
+            type: 'floating',
+            animated: true,
+            style: { stroke: '#000000' },
+            markerEnd: { type: MarkerType.ArrowClosed, color: '#000000', width: 15, height: 15 },
+        }, eds)),
         [setEdges]
     );
 
@@ -948,6 +957,33 @@ function GraphCanvasContent() {
         }
     };
 
+    const handleAddNode = useCallback((type: 'entity' | 'note') => {
+        const windowWidth = typeof window !== 'undefined' ? window.innerWidth : 1000;
+        const windowHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+
+        const position = screenToFlowPosition({
+            x: windowWidth / 2,
+            y: windowHeight / 2,
+        });
+
+        const newNodeId = `${type}-${Date.now()}`;
+        const newNode: Node = {
+            id: newNodeId,
+            type: type === 'entity' ? 'businessCard' : 'noteNode',
+            position,
+            data: type === 'entity' ? {
+                label: 'New Entity',
+                role: 'Custom',
+                type: 'company',
+                isCustom: true,
+            } : {
+                label: '',
+            }
+        };
+
+        setNodes((nds) => [...nds, newNode]);
+    }, [screenToFlowPosition, setNodes]);
+
     if (error) {
         return (
             <div className="h-full w-full flex items-center justify-center bg-slate-50">
@@ -961,158 +997,209 @@ function GraphCanvasContent() {
     }
 
     return (
-        <div className="h-full w-full bg-slate-50 relative overflow-hidden">
-            <ReactFlow
-                nodes={nodes}
-                edgeTypes={edgeTypes}
-                edges={edges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onConnect={onConnect}
-                onNodeClick={onNodeClick}
-                onNodeMouseEnter={onNodeMouseEnter}
-                onNodeMouseLeave={onNodeMouseLeave}
-                onPaneClick={onPaneClick}
-                nodeTypes={nodeTypes}
-                fitView
-                className="bg-slate-50"
-            >
-                <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#cbd5e1" />
-                <Controls className="bg-white border-slate-200 shadow-sm text-slate-900" />
+        <div className="h-full w-full bg-white flex flex-col relative overflow-hidden">
+            {/* Main Header Container */}
+            <header className="flex-none bg-white">
+                <div className="px-4 py-4 flex items-start justify-between">
+                    {/* Left side: Title and Tabs */}
+                    <div className="flex flex-col space-y-4">
+                        {/* Title */}
+                        <div className="flex items-center">
+                            <h1 className="text-[20px] font-bold tracking-tight text-[#132B5C]">Company Explorer</h1>
+                        </div>
 
-                {/* Title Panel */}
-                <Panel position="top-left" className="bg-white p-2 rounded-lg shadow-md border border-slate-200">
-                    <h1 className="text-lg font-bold leading-tight px-2" style={{ color: '#132B5C' }}>Company Map</h1>
-                    <p className="text-[10px] text-slate-400 px-2 font-medium">Dylan Wordley - ComMap V.1</p>
-                </Panel>
-
-                {/* Search Panel */}
-                <Panel position="top-center" className="bg-white p-2 rounded-lg shadow-md border border-slate-200 flex flex-col gap-2 w-[400px]">
-                    <form
-                        onSubmit={(e) => {
-                            e.preventDefault();
-                            const form = e.target as HTMLFormElement;
-                            const input = form.elements.namedItem('search') as HTMLInputElement;
-                            if (input.value.trim()) {
-                                const newParams = new URLSearchParams(searchParams.toString());
-                                newParams.set('q', input.value.trim());
-                                window.history.pushState(null, '', `?${newParams.toString()}`);
-                                window.location.search = `?${newParams.toString()}`;
-                            }
-                        }}
-                        className="flex w-full gap-2"
-                    >
-                        <input
-                            name="search"
-                            defaultValue={query || ''}
-                            placeholder="Search Company..."
-                            className="flex-1 px-3 py-1 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-900"
-                        />
-                        <Button type="submit" size="sm" className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90">
-                            Search
-                        </Button>
-                    </form>
-                    <p className="text-[10px] text-slate-400 text-center px-1">
-                        Please only enter a company name/number, do not input any internal data or customer PII.
-                    </p>
-                </Panel>
-                <Panel position="top-right" className="flex gap-2">
-                    {/* Level Expansion Dropdown */}
-                    <div className="bg-white border border-slate-200 rounded-md flex items-center px-2 shadow-sm">
-                        <span className="text-xs font-medium text-slate-500 mr-2">Expand:</span>
-                        <select
-                            value={expansionLevel}
-                            onChange={(e) => setExpansionLevel(Number(e.target.value))}
-                            className="text-sm font-medium text-slate-900 bg-transparent focus:outline-none cursor-pointer"
-                        >
-                            <option value={1}>Level 1</option>
-                            <option value={2}>Level 2</option>
-                        </select>
+                        {/* Tabs */}
+                        <div className="flex items-center space-x-6">
+                            <button className="text-[13px] font-bold text-[#132B5C] border-b-2 border-[#132B5C] pb-2 uppercase tracking-wide">
+                                Network Analysis
+                            </button>
+                            <button className="text-[13px] font-bold text-slate-400 pb-2 uppercase tracking-wide hover:text-slate-600 transition-colors">
+                                OSINT Search
+                            </button>
+                        </div>
                     </div>
 
-                    <Button
-                        variant="default"
-                        size="sm"
-                        onClick={handleExpandNetwork}
-                        disabled={!selectedNode || loading}
-                        className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90 disabled:opacity-50 shadow-sm"
-                        title={selectedNode ? `Expand ${selectedNode.data.label}` : "Select a node to expand"}
-                    >
-                        {loading ? "Loading..." : (!selectedNode ? "Select Node" : "Expand")}
-                    </Button>
+                    {/* Right side: Search Field */}
+                    <div className="flex items-center pt-2">
+                        <form
+                            onSubmit={(e) => {
+                                e.preventDefault();
+                                const form = e.target as HTMLFormElement;
+                                const input = form.elements.namedItem('search') as HTMLInputElement;
+                                if (input.value.trim()) {
+                                    const newParams = new URLSearchParams(searchParams.toString());
+                                    newParams.set('q', input.value.trim());
+                                    window.history.pushState(null, '', `?${newParams.toString()}`);
+                                    window.location.search = `?${newParams.toString()}`;
+                                }
+                            }}
+                            className="flex items-center gap-2"
+                        >
+                            <input
+                                name="search"
+                                defaultValue={query || ''}
+                                placeholder="TESCO PLC"
+                                className="w-[300px] px-3 py-1.5 text-sm text-slate-900 border border-slate-200 rounded-md focus:outline-none focus:border-slate-300 focus:ring-1 focus:ring-slate-300 placeholder:text-slate-400"
+                            />
+                            <Button type="submit" size="sm" className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90 h-[34px] px-6">
+                                Search
+                            </Button>
+                        </form>
+                    </div>
+                </div>
 
-                    <div className="w-px h-8 bg-slate-200 mx-1 self-center" />
+                {/* Quick Tools Bar */}
+                <div className="w-full h-[40px] bg-slate-50 border-y border-slate-200 flex items-center px-4">
+                    <span className="text-xs font-semibold text-slate-800 mr-6">Quick Tools</span>
 
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={handleDeleteSelected}
-                        disabled={!nodes.some(n => n.selected)}
-                        className="bg-white border-slate-200 hover:bg-red-50 text-red-600 hover:text-red-700 hover:border-red-200 disabled:opacity-50"
-                        title="Delete Selected"
-                    >
-                        <Trash className="h-4 w-4" />
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={handleDeleteBranch}
-                        disabled={!nodes.some(n => n.selected)}
-                        className="bg-white border-slate-200 hover:bg-red-50 text-red-600 hover:text-red-700 hover:border-red-200 disabled:opacity-50"
-                        title="Delete Selected & Isolated Sub-branches"
-                    >
-                        <Trash2 className="h-4 w-4" />
-                    </Button>
+                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                        {/* Add Node Buttons */}
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleAddNode('entity')}
+                            className="h-7 text-xs bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
+                        >
+                            <PlusCircle className="h-3.5 w-3.5 mr-1.5" />
+                            Entity
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleAddNode('note')}
+                            className="h-7 text-xs bg-yellow-50 text-yellow-700 hover:bg-yellow-100 border-yellow-200 mr-2"
+                        >
+                            <StickyNote className="h-3.5 w-3.5 mr-1.5" />
+                            Note
+                        </Button>
 
-                    <div className="w-px h-8 bg-slate-200 mx-1 self-center" />
+                        <div className="w-px h-4 bg-slate-300 mr-2" />
 
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => onLayout('TB')}
-                        className="bg-white border-slate-200 hover:bg-slate-50"
-                        title="Vertical Layout"
-                    >
-                        <ArrowDown className="h-4 w-4 text-slate-700" />
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => onLayout('LR')}
-                        className="bg-white border-slate-200 hover:bg-slate-50"
-                        title="Horizontal Layout"
-                    >
-                        <ArrowRight className="h-4 w-4 text-slate-700" />
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => onLayout(layoutDirection)}
-                        className="bg-white border-slate-200 hover:bg-slate-50"
-                        title="Auto Align"
-                    >
-                        <RefreshCw className="h-4 w-4 text-slate-700" />
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => onLayout('RADIAL')}
-                        className="bg-white border-slate-200 hover:bg-slate-50"
-                        title="Radial Layout"
-                    >
-                        <Circle className="h-4 w-4 text-slate-700" />
-                    </Button>
-                    <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={downloadImage}
-                        className="bg-white border-slate-200 hover:bg-slate-50"
-                        title="Download Screenshot"
-                    >
-                        <Camera className="h-4 w-4 text-slate-700" />
-                    </Button>
-                </Panel>
-            </ReactFlow>
+                        {/* Level Expansion Dropdown */}
+                        <div className="flex items-center">
+                            <span className="text-[11px] font-medium text-slate-500 mr-1.5">Expand:</span>
+                            <select
+                                value={expansionLevel}
+                                onChange={(e) => setExpansionLevel(Number(e.target.value))}
+                                className="text-xs font-medium text-slate-700 bg-transparent border border-slate-200 rounded px-1.5 py-1 focus:outline-none cursor-pointer hover:bg-slate-100"
+                            >
+                                <option value={1}>Level 1</option>
+                                <option value={2}>Level 2</option>
+                            </select>
+                        </div>
+
+                        <Button
+                            variant="default"
+                            size="sm"
+                            onClick={handleExpandNetwork}
+                            disabled={!selectedNode || loading}
+                            className="h-7 text-xs bg-[#132B5C] text-white hover:bg-[#132B5C]/90 disabled:opacity-50 ml-1 px-3"
+                            title={selectedNode ? `Expand ${selectedNode.data.label}` : "Select a node to expand"}
+                        >
+                            {loading ? "..." : "Expand"}
+                        </Button>
+
+                        <div className="w-px h-4 bg-slate-300 mx-2" />
+
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleDeleteSelected}
+                            disabled={!nodes.some(n => n.selected)}
+                            className="h-7 w-7 text-slate-600 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent"
+                            title="Delete Selected"
+                        >
+                            <Trash className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={handleDeleteBranch}
+                            disabled={!nodes.some(n => n.selected)}
+                            className="h-7 w-7 text-slate-600 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent"
+                            title="Delete Selected & Isolated Sub-branches"
+                        >
+                            <Trash2 className="h-4 w-4" />
+                        </Button>
+
+                        <div className="w-px h-4 bg-slate-300 mx-2" />
+
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onLayout('TB')}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Vertical Layout"
+                        >
+                            <ArrowDown className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onLayout('LR')}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Horizontal Layout"
+                        >
+                            <ArrowRight className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onLayout(layoutDirection)}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Auto Align"
+                        >
+                            <RefreshCw className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => onLayout('RADIAL')}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Radial Layout"
+                        >
+                            <Circle className="h-4 w-4" />
+                        </Button>
+
+                        <div className="w-px h-4 bg-slate-300 mx-2" />
+
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={downloadImage}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Download Screenshot"
+                        >
+                            <Camera className="h-4 w-4" />
+                        </Button>
+                    </div>
+                </div>
+            </header>
+
+            {/* Canvas Area */}
+            <div className="flex-1 relative bg-slate-50 w-full">
+                <ReactFlow
+                    nodes={nodes}
+                    edgeTypes={edgeTypes}
+                    edges={edges}
+                    onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
+                    onConnect={onConnect}
+                    onNodeClick={onNodeClick}
+                    onNodeMouseEnter={onNodeMouseEnter}
+                    onNodeMouseLeave={onNodeMouseLeave}
+                    onPaneClick={onPaneClick}
+                    nodeTypes={nodeTypes}
+                    isValidConnection={() => true}
+                    connectionMode={ConnectionMode.Loose}
+                    fitView
+                    className="bg-slate-50"
+                >
+                    <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#cbd5e1" />
+                    <Controls className="bg-white border-slate-200 shadow-sm text-slate-900" />
+
+                </ReactFlow>
+            </div>
 
             <NodeDetailsPanel
                 node={selectedNode}
