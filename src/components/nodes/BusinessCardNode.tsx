@@ -1,9 +1,10 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { cn } from '@/lib/utils';
+import { cn, getSicDescription } from '@/lib/utils';
 import { Building2, User, MapPin, Crown } from 'lucide-react';
+import { Button } from "@/components/ui/button";
 
-const BusinessCardNode = ({ data, selected }: NodeProps) => {
+const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
     const type = data.type || 'company'; // default to company
 
     const getAccentColor = () => {
@@ -17,14 +18,39 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
     };
 
     const getIcon = () => {
+        const isCustom = data.isCustom;
+        const isDualRole = !!data.isDualRole;
         const iconType = data.customIcon || type;
 
+        // Helper to format date
         switch (iconType) {
             case 'officer': return <User className={cn("h-4 w-4", data.customColor ? "" : "text-emerald-600")} style={data.customColor ? { color: data.customColor } : undefined} />;
             case 'address': return <MapPin className="h-4 w-4 text-slate-600" />;
             case 'psc': return <Crown className="h-4 w-4 text-amber-600" />;
             case 'company': return <Building2 className="h-4 w-4 text-slate-900" />;
+            case 'officer|psc': return (
+                <div className="flex gap-1">
+                    <User className="h-4 w-4 text-emerald-600" />
+                    <Crown className="h-4 w-4 text-amber-600" />
+                </div>
+            );
             default: return <Building2 className="h-4 w-4 text-slate-900" />;
+        }
+    };
+
+    const isOfficer = type === 'officer';
+    const isPsc = type === 'psc';
+    const isCompany = type === 'company';
+    const isDualRole = !!data.isDualRole;
+
+    const formatDate = (dateString: string) => {
+        if (!dateString) return null;
+        try {
+            const date = new Date(dateString);
+            return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+        } catch (e) {
+            console.error("Invalid date string:", dateString);
+            return dateString; // Return original if invalid
         }
     };
 
@@ -38,7 +64,11 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
         >
             {/* Top Accent Bar (Replaces left accent to look more like a premium card) */}
             <div
-                className={cn("h-1.5 w-full rounded-t-md", !data.customColor && getAccentColor())}
+                className={cn(
+                    "h-1.5 w-full rounded-t-md",
+                    !data.customColor && !data.isDualRole && getAccentColor(),
+                    !data.customColor && data.isDualRole && "bg-gradient-to-r from-emerald-500 to-amber-500"
+                )}
                 style={data.customColor ? { backgroundColor: data.customColor } : undefined}
             />
 
@@ -59,7 +89,7 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
                 </div>
 
                 {/* Optional: Extra details if needed */}
-                {(data.subtext || data.status || data.country_of_residence || data.address) && (
+                {(data.subtext || data.status || data.country_of_residence || data.address || data.source?.sic_codes) && (
                     <div className="mt-2 text-xs text-slate-400 border-t border-slate-100 pt-1 flex flex-col gap-0.5">
                         {data.subtext && <span>{data.subtext}</span>}
                         {data.status && (
@@ -72,6 +102,12 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
                         )}
                         {data.country_of_residence && <span>{data.country_of_residence}</span>}
                         {data.address && <span className="truncate">{data.address}</span>}
+                        {data.source?.sic_codes && data.source.sic_codes.length > 0 && (
+                            <span className="truncate border border-slate-200 bg-slate-50 text-slate-500 rounded px-1.5 py-0.5 mt-1 font-medium text-[10px]" title={getSicDescription(data.source.sic_codes[0])}>
+                                {data.source.sic_codes[0]}: {getSicDescription(data.source.sic_codes[0])}
+                                {data.source.sic_codes.length > 1 && ` (+${data.source.sic_codes.length - 1})`}
+                            </span>
+                        )}
                     </div>
                 )}
 
@@ -79,6 +115,24 @@ const BusinessCardNode = ({ data, selected }: NodeProps) => {
                 {data.notes && (
                     <div className="mt-2 text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100 truncate">
                         📝 {data.notes}
+                    </div>
+                )}
+
+                {/* Probable merge prompt */}
+                {data.probableDuplicateOf && (
+                    <div className="mt-2 text-xs pt-2 border-t border-slate-100 flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 font-medium">Possible duplicate</span>
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-5 text-[10px] px-2 py-0 bg-slate-100 hover:bg-slate-200 text-slate-700"
+                            onClick={(e: React.MouseEvent) => {
+                                e.stopPropagation();
+                                data.onMerge?.(data.probableDuplicateOf, id);
+                            }}
+                        >
+                            Merge?
+                        </Button>
                     </div>
                 )}
             </div>

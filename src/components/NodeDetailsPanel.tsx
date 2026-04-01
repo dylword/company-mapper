@@ -115,6 +115,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
     const isPsc = data.type === 'psc';
     const isAddress = data.type === 'address';
     const isCustom = data.isCustom;
+    const isDualRole = !!data.isDualRole;
 
     // Helper to format date
     const formatDate = (dateStr: string) => {
@@ -135,12 +136,13 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                     <div className="flex items-center gap-2">
                         <span className={cn(
                             "px-2 py-0.5 rounded-full text-[10px] uppercase font-bold tracking-wider border",
-                            isCompany ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                isOfficer ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                    isPsc ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                        'bg-slate-50 text-slate-700 border-slate-200'
+                            isDualRole ? 'bg-gradient-to-r from-emerald-50 to-amber-50 text-slate-800 border-slate-300' :
+                                isCompany ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                    isOfficer ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                        isPsc ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                            'bg-slate-50 text-slate-700 border-slate-200'
                         )}>
-                            {data.type}
+                            {isDualRole ? 'Director & PSC' : data.type}
                         </span>
                         {data.status && (
                             <span className={cn(
@@ -224,7 +226,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                                 </div>
                             </>
                         )}
-                        {(isOfficer || isPsc) && (
+                        {(isOfficer || isPsc || isDualRole) && (
                             <>
                                 <div>
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Appointed</span>
@@ -408,7 +410,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                 )}
 
                 {/* Personal Card */}
-                {(isOfficer || isPsc) && (
+                {(isOfficer || isPsc || isDualRole) && (
                     <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">
                         <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                             <User className="h-4 w-4 text-slate-400" />
@@ -423,11 +425,11 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
                                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Residence</span>
                                 <p className="text-sm font-medium text-slate-900 mt-0.5">{data.country_of_residence || 'N/A'}</p>
                             </div>
-                            {data.source?.date_of_birth && (
+                            {(data.source?.date_of_birth || data.source?.officer?.date_of_birth || data.source?.psc?.date_of_birth) && (
                                 <div>
                                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Born</span>
                                     <p className="text-sm font-medium text-slate-900 mt-0.5">
-                                        {data.source.date_of_birth.month}/{data.source.date_of_birth.year}
+                                        {(data.source?.date_of_birth || data.source?.officer?.date_of_birth || data.source?.psc?.date_of_birth).month}/{(data.source?.date_of_birth || data.source?.officer?.date_of_birth || data.source?.psc?.date_of_birth).year}
                                     </p>
                                 </div>
                             )}

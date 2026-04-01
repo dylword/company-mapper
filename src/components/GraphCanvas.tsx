@@ -19,7 +19,7 @@ import ReactFlow, {
     getTransformForBounds,
     ConnectionMode,
 } from 'reactflow';
-import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2, PlusCircle, StickyNote } from 'lucide-react';
+import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2, PlusCircle, StickyNote, Download, List } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import 'reactflow/dist/style.css';
 
@@ -27,10 +27,12 @@ import { Button } from "@/components/ui/button"
 import BusinessCardNode from './nodes/BusinessCardNode';
 import NoteNode from './nodes/NoteNode';
 import FloatingEdge from './edges/FloatingEdge';
+import { FilteredResultsPanel } from './FilteredResultsPanel';
 import { NodeDetailsPanel } from './NodeDetailsPanel';
 import { getLayoutedElements } from '@/lib/layout';
-import { cn, formatDate } from '@/lib/utils';
+import { cn, formatDate, getSicDescription } from '@/lib/utils';
 import { useSearchParams } from 'next/navigation';
+import { processDuplicates, mergeNodes as mergeNodesUtil } from '@/lib/matchUtils';
 
 const nodeTypes = {
     businessCard: BusinessCardNode,
@@ -44,7 +46,7 @@ const edgeTypes = {
 function GraphCanvasContent() {
     const searchParams = useSearchParams();
     const query = searchParams.get('q');
-    const { getNodes, getViewport, screenToFlowPosition } = useReactFlow();
+    const { getNodes, getViewport, screenToFlowPosition, setCenter } = useReactFlow();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
@@ -71,12 +73,29 @@ function GraphCanvasContent() {
                 direction
             );
 
-            setNodes([...layoutedNodes]);
+            setNodes(layoutedNodes.map(n => ({ ...n, data: { ...n.data, onMerge: handleMergeNodes } })));
             setEdges([...layoutedEdges]);
             setLayoutDirection(direction);
         },
         [nodes, edges, setNodes, setEdges]
     );
+
+    const handleMergeNodes = useCallback((targetId: string, sourceId: string) => {
+        setNodes(nds => {
+            const targetNode = nds.find(n => n.id === targetId);
+            const sourceNode = nds.find(n => n.id === sourceId);
+            if (!targetNode || !sourceNode) return nds;
+
+            const merged = mergeNodesUtil(targetNode, sourceNode);
+            return nds.map(n => n.id === targetId ? merged : n).filter(n => n.id !== sourceId);
+        });
+
+        setEdges(eds => eds.map(e => {
+            let s = e.source === sourceId ? targetId : e.source;
+            let t = e.target === sourceId ? targetId : e.target;
+            return { ...e, source: s, target: t };
+        }));
+    }, [setNodes, setEdges]);
 
     // Helper to deduplicate edges
     const deduplicateEdges = (edges: Edge[]) => {
@@ -339,13 +358,15 @@ function GraphCanvasContent() {
                 });
                 const newEdges = Array.from(uniqueEdges.values());
 
+                const consolidated = processDuplicates(newNodes, newEdges);
+
                 const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-                    newNodes,
-                    newEdges,
+                    consolidated.nodes,
+                    consolidated.edges,
                     layoutDirection
                 );
 
-                setNodes(layoutedNodes);
+                setNodes(layoutedNodes.map(n => ({ ...n, data: { ...n.data, onMerge: handleMergeNodes } })));
                 setEdges(layoutedEdges);
                 setSelectedNode(companyNode);
             } catch (error: any) {
@@ -362,11 +383,40 @@ function GraphCanvasContent() {
     const [selectedNode, setSelectedNode] = React.useState<Node | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
     const [isDialogOpen, setIsDialogOpen] = React.useState(false);
+    const [isFilteredPanelOpen, setIsFilteredPanelOpen] = React.useState(false);
+    const [visibleNodeIds, setVisibleNodeIds] = React.useState<Set<string>>(new Set());
 
     // Customization State
     const [customColor, setCustomColor] = React.useState<string>("");
     const [notes, setNotes] = React.useState<string>("");
     const [expansionLevel, setExpansionLevel] = React.useState<number>(1);
+
+    const [statusFilters, setStatusFilters] = React.useState<string[]>([]);
+    const [sicFilters, setSicFilters] = React.useState<string[]>([]);
+    const [sicSearchTerm, setSicSearchTerm] = React.useState<string>("");
+    const [isSicDropdownOpen, setIsSicDropdownOpen] = React.useState<boolean>(false);
+    
+    const availableStatuses = useMemo(() => {
+        const statuses = new Set<string>();
+        nodes.forEach(n => {
+            if (n.data.type === 'company' && n.data.status) {
+                statuses.add(n.data.status);
+            }
+        });
+        return Array.from(statuses).sort();
+    }, [nodes]);
+
+    const availableSics = useMemo(() => {
+        const sics = new Set<string>();
+        nodes.forEach(n => {
+            if (n.data.type === 'company' && n.data.source?.sic_codes) {
+                if (Array.isArray(n.data.source.sic_codes)) {
+                    n.data.source.sic_codes.forEach((code: any) => sics.add(String(code)));
+                }
+            }
+        });
+        return Array.from(sics).sort();
+    }, [nodes]);
 
     const onNodeClick = useCallback((event: React.MouseEvent, node: Node) => {
         setSelectedNode(node);
@@ -393,19 +443,11 @@ function GraphCanvasContent() {
     useEffect(() => {
         const activeNodeId = hoveredNodeId || selectedNode?.id;
 
-        if (!activeNodeId) {
-            // Reset opacity
-            setNodes((nds) => nds.map((n) => ({ ...n, style: { ...n.style, opacity: 1 } })));
-            setEdges((eds) => eds.map((e) => ({ ...e, style: { ...e.style, opacity: 1, stroke: '#000000' } })));
-            return;
-        }
-
-        const connectedNodeIds = new Set<string>();
-        const connectedEdgeIds = new Set<string>();
-        const queue: string[] = [activeNodeId];
-        connectedNodeIds.add(activeNodeId);
-
+        const hasStatusFilter = statusFilters.length > 0;
+        const hasSicFilter = sicFilters.length > 0;
+        const visibleNodeIdsLocal = new Set<string>();
         const adjacency = new Map<string, Array<{ nodeId: string, edgeId: string }>>();
+        
         edges.forEach(edge => {
             if (!adjacency.has(edge.source)) adjacency.set(edge.source, []);
             if (!adjacency.has(edge.target)) adjacency.set(edge.target, []);
@@ -414,62 +456,122 @@ function GraphCanvasContent() {
             adjacency.get(edge.target)?.push({ nodeId: edge.source, edgeId: edge.id });
         });
 
-        while (queue.length > 0) {
-            const currId = queue.shift()!;
-            const currNode = nodes.find(n => n.id === currId);
+        // 1. Calculate filter visibility
+        if (hasStatusFilter || hasSicFilter) {
+            const queue: string[] = [];
+            nodes.forEach(n => {
+                if (n.data.type === 'company') {
+                    const matchesStatus = !hasStatusFilter || statusFilters.includes(n.data.status);
+                    const companySics = (n.data.source?.sic_codes || []).map((c: any) => String(c));
+                    const matchesSic = !hasSicFilter || sicFilters.some(sic => companySics.includes(sic));
+                    
+                    if (matchesStatus && matchesSic) {
+                        queue.push(n.id);
+                        visibleNodeIdsLocal.add(n.id);
+                    }
+                } else if (n.data.type === 'noteNode') {
+                    visibleNodeIdsLocal.add(n.id);
+                }
+            });
 
-            if (currNode?.data?.type === 'company' && currId !== activeNodeId) {
-                continue;
-            }
+            let head = 0;
+            while (head < queue.length) {
+                const currId = queue[head++];
+                const neighbors = adjacency.get(currId) || [];
 
-            const neighbors = adjacency.get(currId) || [];
-
-            for (const { nodeId, edgeId } of neighbors) {
-                connectedEdgeIds.add(edgeId);
-
-                if (!connectedNodeIds.has(nodeId)) {
-                    connectedNodeIds.add(nodeId);
-                    queue.push(nodeId);
+                for (const { nodeId: nid } of neighbors) {
+                    if (!visibleNodeIdsLocal.has(nid)) {
+                        const neighborNode = nodes.find(n => n.id === nid);
+                        if (neighborNode && neighborNode.data.type !== 'company') {
+                            visibleNodeIdsLocal.add(nid);
+                            queue.push(nid);
+                        }
+                    }
                 }
             }
         }
 
-        edges.forEach(edge => {
-            if (connectedNodeIds.has(edge.source) && connectedNodeIds.has(edge.target)) {
-                connectedEdgeIds.add(edge.id);
-            }
-        });
+        // 2. Calculate hover visibility
+        const connectedNodeIds = new Set<string>();
+        const connectedEdgeIds = new Set<string>();
 
+        if (activeNodeId) {
+            const queue: string[] = [activeNodeId];
+            connectedNodeIds.add(activeNodeId);
+
+            while (queue.length > 0) {
+                const currId = queue.shift()!;
+                const currNode = nodes.find(n => n.id === currId);
+
+                if (currNode?.data?.type === 'company' && currId !== activeNodeId) {
+                    continue;
+                }
+
+                const neighbors = adjacency.get(currId) || [];
+
+                for (const { nodeId, edgeId } of neighbors) {
+                    connectedEdgeIds.add(edgeId);
+
+                    if (!connectedNodeIds.has(nodeId)) {
+                        connectedNodeIds.add(nodeId);
+                        queue.push(nodeId);
+                    }
+                }
+            }
+
+            edges.forEach(edge => {
+                if (connectedNodeIds.has(edge.source) && connectedNodeIds.has(edge.target)) {
+                    connectedEdgeIds.add(edge.id);
+                }
+            });
+        }
+
+        setVisibleNodeIds(visibleNodeIdsLocal);
+
+        // 3. Apply opacity and styling
         setNodes((nds) => nds.map((node) => {
-            const isConnected = connectedNodeIds.has(node.id);
-            if (node.style?.opacity === (isConnected ? 1 : 0.2)) return node; // Skip unnecessary updates
+            let isFilteredOut = (hasStatusFilter || hasSicFilter) && !visibleNodeIdsLocal.has(node.id);
+            const isConnectedToHover = connectedNodeIds.has(node.id);
+
+            const isDimmed = isFilteredOut || (activeNodeId && !isConnectedToHover);
+            const targetOpacity = isDimmed ? 0.2 : 1;
+
+            if (node.style?.opacity === targetOpacity) return node;
 
             return {
                 ...node,
                 style: {
                     ...node.style,
-                    opacity: isConnected ? 1 : 0.2,
+                    opacity: targetOpacity,
                     transition: 'opacity 0.2s ease-in-out'
                 }
             };
         }));
 
         setEdges((eds) => eds.map((edge) => {
-            const isConnected = connectedEdgeIds.has(edge.id);
-            const defaultStroke = '#000000';
-            if (edge.style?.opacity === (isConnected ? 1 : 0.1)) return edge; // Skip unnecessary updates
+            const isSourceFilteredOut = (hasStatusFilter || hasSicFilter) && !visibleNodeIdsLocal.has(edge.source);
+            const isTargetFilteredOut = (hasStatusFilter || hasSicFilter) && !visibleNodeIdsLocal.has(edge.target);
+            const isEdgeFilteredOut = isSourceFilteredOut || isTargetFilteredOut;
+
+            const isEdgeHoverConnected = connectedEdgeIds.has(edge.id);
+
+            const isDimmed = isEdgeFilteredOut || (activeNodeId && !isEdgeHoverConnected);
+            const targetOpacity = isDimmed ? 0.1 : 1;
+            const targetStroke = isDimmed ? '#cbd5e1' : (edge.label === 'PSC' ? '#f59e0b' : '#000000');
+
+            if (edge.style?.opacity === targetOpacity && edge.style?.stroke === targetStroke) return edge;
 
             return {
                 ...edge,
                 style: {
                     ...edge.style,
-                    opacity: isConnected ? 1 : 0.1,
-                    stroke: isConnected ? defaultStroke : '#cbd5e1',
+                    opacity: targetOpacity,
+                    stroke: targetStroke,
                     transition: 'opacity 0.2s ease-in-out'
                 }
             };
         }));
-    }, [hoveredNodeId, selectedNode?.id]); // Note: explicitly NOT depending on `nodes` or `edges` array contents
+    }, [hoveredNodeId, selectedNode?.id, statusFilters, sicFilters]); // using closure state - careful with infinite loops. ReactFlow nodes updates don't change object identities for un-updated nodes
 
     const handleSaveCustomization = () => {
         if (!selectedNode) return;
@@ -495,42 +597,45 @@ function GraphCanvasContent() {
         const newEdges: Edge[] = [];
         const allNeighbors: Node[] = []; // To track all found neighbors for recursion
 
-        if (nodeToExpand.data.type === 'officer' && nodeToExpand.data.officer_id) {
+        if (nodeToExpand.data.type?.includes('officer') && nodeToExpand.data.officer_id) {
             const res = await fetch(`/api/officer/${nodeToExpand.data.officer_id}/appointments`);
             const data = await res.json();
 
             if (data.items) {
-                // Fetch full company details for each appointment in parallel
-                const appointmentPromises = data.items.map(async (item: any) => {
-                    const nodeId = item.appointed_to.company_number;
+                const chunkSize = 10;
+                let results: any[] = [];
+                
+                for (let i = 0; i < data.items.length; i += chunkSize) {
+                    const chunk = data.items.slice(i, i + chunkSize);
+                    const chunkPromises = chunk.map(async (item: any) => {
+                        const nodeId = item.appointed_to.company_number;
 
-                    // Always return the node info, even if it exists
-                    try {
-                        // Optimisation: If node exists, we might not need to fetch details again if we trust existing data
-                        // But for simplicity and ensuring we have the node object for recursion, we'll proceed.
-                        // Actually, if it exists, we can just find it in currentNodes.
-                        const existingNode = currentNodes.find(n => n.id === nodeId);
-                        if (existingNode) {
-                            return { item, company: existingNode.data.source, existingNode };
+                        // Always return the node info, even if it exists
+                        try {
+                            const existingNode = currentNodes.find(n => n.id === nodeId);
+                            if (existingNode) {
+                                return { item, company: existingNode.data.source, existingNode };
+                            }
+
+                            const companyRes = await fetch(`/api/company/${nodeId}`);
+                            const companyData = await companyRes.json();
+
+                            if (companyData.company) {
+                                return {
+                                    item,
+                                    company: companyData.company
+                                };
+                            }
+                        } catch (err) {
+                            console.warn(`Failed to fetch details for company ${nodeId}`, err);
                         }
 
-                        const companyRes = await fetch(`/api/company/${nodeId}`);
-                        const companyData = await companyRes.json();
+                        return { item, company: null };
+                    });
 
-                        if (companyData.company) {
-                            return {
-                                item,
-                                company: companyData.company
-                            };
-                        }
-                    } catch (err) {
-                        console.warn(`Failed to fetch details for company ${nodeId}`, err);
-                    }
-
-                    return { item, company: null };
-                });
-
-                const results = await Promise.all(appointmentPromises);
+                    const chunkResults = await Promise.all(chunkPromises);
+                    results = results.concat(chunkResults);
+                }
 
                 results.forEach((result: any) => {
                     if (!result) return;
@@ -803,9 +908,15 @@ function GraphCanvasContent() {
             for (let i = 0; i < expansionLevel; i++) {
                 const nextLevelNodes: Node[] = [];
 
-                const expansionResults = await Promise.all(
-                    nodesToExpand.map(node => expandSingleNode(node, currentNodes, currentEdges))
-                );
+                const chunkSize = 5;
+                const expansionResults: { newNodes: Node[]; newEdges: Edge[]; allNeighbors: Node[] }[] = [];
+                for (let j = 0; j < nodesToExpand.length; j += chunkSize) {
+                    const chunk = nodesToExpand.slice(j, j + chunkSize);
+                    const chunkResults = await Promise.all(
+                        chunk.map(node => expandSingleNode(node, currentNodes, currentEdges))
+                    );
+                    expansionResults.push(...chunkResults);
+                }
 
                 for (const result of expansionResults) {
                     result.newNodes.forEach(node => {
@@ -833,14 +944,6 @@ function GraphCanvasContent() {
                 }
 
                 // Update currentNodes with NEW nodes only
-                // (Already done in the loop above for newNodes)
-                // Wait, I need to add newNodes to currentNodes for the next iteration's check.
-                // The loop above adds to nextLevelNodes (which was just new nodes).
-                // I should separate "nodes added to graph" and "nodes to expand next".
-
-                // Let's fix the loop above:
-                // 1. Add result.newNodes to currentNodes.
-                // 2. Collect result.allNeighbors into nodesToExpand for next loop.
                 currentNodes = [...currentNodes, ...nextLevelNodes];
                 nodesToExpand = uniqueNextNodes; // Use unique neighbors for next level
 
@@ -848,13 +951,16 @@ function GraphCanvasContent() {
             }
 
             // Re-layout
+            const currentEdgesDeduped = deduplicateEdges(currentEdges);
+            const consolidated = processDuplicates(currentNodes, currentEdgesDeduped);
+
             const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-                currentNodes,
-                deduplicateEdges(currentEdges),
+                consolidated.nodes,
+                consolidated.edges,
                 layoutDirection
             );
 
-            setNodes(layoutedNodes);
+            setNodes(layoutedNodes.map(n => ({ ...n, data: { ...n.data, onMerge: handleMergeNodes } })));
             setEdges(layoutedEdges);
 
         } catch (error) {
@@ -957,6 +1063,70 @@ function GraphCanvasContent() {
         }
     };
 
+    const exportToCSV = () => {
+        const rows: any[] = [];
+        const companies = nodes.filter(n => n.data.type === 'company');
+
+        companies.forEach(company => {
+            const sics = (company.data.source?.sic_codes || []).map((c: any) => String(c));
+            const sicString = sics.map((code: string) => `${code} - ${getSicDescription(code)}`).join("; ");
+
+            const connectedEdges = edges.filter(e => e.source === company.id || e.target === company.id);
+
+            if (connectedEdges.length === 0) {
+                rows.push({
+                    "Company Name": company.data.label,
+                    "Company Number": company.id,
+                    "Company Status": company.data.status || "",
+                    "Nature of Business": sicString,
+                    "Company Address": company.data.address || "",
+                    "Connected Entity Name": "",
+                    "Connection Type": "",
+                    "Entity Address": "",
+                    "Entity Details": ""
+                });
+                return;
+            }
+
+            connectedEdges.forEach(edge => {
+                const isSource = edge.source === company.id;
+                const otherNodeId = isSource ? edge.target : edge.source;
+                const otherNode = nodes.find(n => n.id === otherNodeId);
+                
+                if (!otherNode || otherNode.data.type === 'address') return;
+                
+                rows.push({
+                    "Company Name": company.data.label,
+                    "Company Number": company.id,
+                    "Company Status": company.data.status || "",
+                    "Nature of Business": sicString,
+                    "Company Address": company.data.address || "",
+                    "Connected Entity Name": otherNode.data.label,
+                    "Connection Type": edge.label || otherNode.data.role || "",
+                    "Entity Address": otherNode.data.address || "",
+                    "Entity Details": otherNode.data.subtext || ""
+                });
+            });
+        });
+
+        if (rows.length === 0) return;
+        
+        const headers = Object.keys(rows[0]);
+        const csvContent = [
+            headers.join(","),
+            ...rows.map(row => headers.map(fieldName => JSON.stringify(row[fieldName] || "")).join(","))
+        ].join("\n");
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `corporate_mapper_export_${new Date().toISOString().slice(0,10)}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     const handleAddNode = useCallback((type: 'entity' | 'note') => {
         const windowWidth = typeof window !== 'undefined' ? window.innerWidth : 1000;
         const windowHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
@@ -996,8 +1166,15 @@ function GraphCanvasContent() {
         );
     }
 
+    const focusNode = React.useCallback((node: Node) => {
+        setCenter(node.position.x, node.position.y, { zoom: 1.5, duration: 800 });
+        setSelectedNode(node);
+        setIsDialogOpen(true);
+        setIsFilteredPanelOpen(false);
+    }, [setCenter]);
+
     return (
-        <div className="h-full w-full bg-white flex flex-col relative overflow-hidden">
+        <div className="flex flex-col h-full bg-slate-50 overflow-hidden relative" onContextMenu={(e) => e.preventDefault()}>
             {/* Main Header Container */}
             <header className="flex-none bg-white">
                 <div className="px-4 py-4 flex items-start justify-between">
@@ -1049,10 +1226,97 @@ function GraphCanvasContent() {
                 </div>
 
                 {/* Quick Tools Bar */}
-                <div className="w-full h-[40px] bg-slate-50 border-y border-slate-200 flex items-center px-4">
-                    <span className="text-xs font-semibold text-slate-800 mr-6">Quick Tools</span>
+                <div className="w-full h-[40px] bg-slate-50 border-y border-slate-200 flex items-center px-4 relative z-50">
+                    <span className="text-xs font-semibold text-slate-800 mr-6 shrink-0">Quick Tools</span>
 
                     <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+                        {availableStatuses.length > 0 && (
+                            <>
+                                <span className="text-[11px] font-medium text-slate-500 mr-1 shrink-0">Filter Status:</span>
+                                <div className="flex gap-1.5 border-r border-slate-300 pr-3 mr-1">
+                                    {availableStatuses.map(status => (
+                                        <button
+                                            key={status}
+                                            onClick={() => {
+                                                setStatusFilters(prev => 
+                                                    prev.includes(status) 
+                                                        ? prev.filter(s => s !== status)
+                                                        : [...prev, status]
+                                                )
+                                            }}
+                                            className={cn(
+                                                "px-2.5 py-1 rounded text-[10px] font-bold uppercase border transition-colors shrink-0",
+                                                statusFilters.includes(status) 
+                                                    ? "bg-[#132B5C] text-white border-[#132B5C]"
+                                                    : "bg-white text-slate-500 border-slate-200 hover:bg-slate-100 focus:outline-none"
+                                            )}
+                                        >
+                                            {status}
+                                        </button>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                        
+                    <div className="flex items-center flex-1">
+                        {availableSics.length > 0 && (
+                            <div className="relative flex items-center ml-2 border-l border-slate-300 pl-3">
+                                <span className="text-[11px] font-medium text-slate-500 mr-2 shrink-0">Nature of Business:</span>
+                                <div className="flex gap-1 mr-2 flex-nowrap">
+                                    {sicFilters.map(sic => (
+                                        <span key={sic} className="px-2 py-0.5 bg-[#132B5C] text-white text-[10px] font-bold rounded flex items-center gap-1 shrink-0">
+                                            {sic}
+                                            <button onClick={() => setSicFilters(prev => prev.filter(s => s !== sic))} className="hover:text-slate-200 mt-0.5">&times;</button>
+                                        </span>
+                                    ))}
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type="text"
+                                        placeholder="Search SIC..."
+                                        value={sicSearchTerm}
+                                        onChange={(e) => {
+                                            setSicSearchTerm(e.target.value);
+                                            setIsSicDropdownOpen(true);
+                                        }}
+                                        onFocus={() => setIsSicDropdownOpen(true)}
+                                        onBlur={() => setTimeout(() => setIsSicDropdownOpen(false), 200)}
+                                        className="w-36 px-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:border-slate-400 shrink-0"
+                                    />
+                                    {isSicDropdownOpen && (
+                                        <div className="absolute top-full mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-[0px_4px_9px_0px_rgba(23,26,31,0.11),0px_0px_2px_0px_rgba(23,26,31,0.12)] z-[60] max-h-48 overflow-y-auto right-0 md:left-0 md:right-auto">
+                                            {availableSics
+                                                .filter(sic => !sicFilters.includes(sic))
+                                                .filter(sic => {
+                                                    if (!sicSearchTerm) return true;
+                                                    const term = sicSearchTerm.toLowerCase();
+                                                    const desc = getSicDescription(sic).toLowerCase();
+                                                    return String(sic).toLowerCase().includes(term) || desc.includes(term);
+                                                })
+                                                .map(sic => (
+                                                    <div
+                                                        key={sic}
+                                                        className="px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
+                                                        onClick={() => {
+                                                            setSicFilters(prev => [...prev, sic]);
+                                                            setSicSearchTerm("");
+                                                            setIsSicDropdownOpen(false);
+                                                        }}
+                                                    >
+                                                        <div className="font-bold text-slate-900">{sic}</div>
+                                                        <div className="text-[10px] text-slate-500 line-clamp-2">{getSicDescription(sic)}</div>
+                                                    </div>
+                                                ))}
+                                            {availableSics.filter(sic => !sicFilters.includes(sic)).filter(sic => String(sic).toLowerCase().includes(sicSearchTerm.toLowerCase()) || getSicDescription(sic).toLowerCase().includes(sicSearchTerm.toLowerCase())).length === 0 && (
+                                                <div className="px-3 py-2 text-xs text-slate-500 text-center italic">No matching businesses found</div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
                         {/* Add Node Buttons */}
                         <Button
                             variant="outline"
@@ -1085,6 +1349,9 @@ function GraphCanvasContent() {
                             >
                                 <option value={1}>Level 1</option>
                                 <option value={2}>Level 2</option>
+                                <option value={3}>Level 3</option>
+                                <option value={4}>Level 4</option>
+                                <option value={5}>Level 5</option>
                             </select>
                         </div>
 
@@ -1164,6 +1431,24 @@ function GraphCanvasContent() {
                         <div className="w-px h-4 bg-slate-300 mx-2" />
 
                         <Button
+                            variant={isFilteredPanelOpen ? "default" : "ghost"}
+                            size="icon"
+                            onClick={() => setIsFilteredPanelOpen(!isFilteredPanelOpen)}
+                            className={cn("h-7 w-7", isFilteredPanelOpen ? "bg-[#132B5C] text-white hover:bg-[#132B5C]/90" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200")}
+                            title="Toggle Filtered Results Sidebar"
+                        >
+                            <List className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={exportToCSV}
+                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
+                            title="Export Data to CSV"
+                        >
+                            <Download className="h-4 w-4" />
+                        </Button>
+                        <Button
                             variant="ghost"
                             size="icon"
                             onClick={downloadImage}
@@ -1237,8 +1522,16 @@ function GraphCanvasContent() {
                         }
                         return node;
                     }));
-                    setSelectedNode((prev) => prev ? { ...prev, data: { ...prev.data, ...updatedData } } : null);
+                    setSelectedNode((prev: any) => prev ? { ...prev, data: { ...prev.data, ...updatedData } } : null);
                 }}
+            />
+            <FilteredResultsPanel 
+                isOpen={isFilteredPanelOpen}
+                onClose={() => setIsFilteredPanelOpen(false)}
+                nodes={nodes}
+                edges={edges}
+                visibleNodeIds={visibleNodeIds}
+                onNodeClick={focusNode}
             />
         </div>
     );
