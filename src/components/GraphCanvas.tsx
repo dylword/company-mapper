@@ -19,7 +19,7 @@ import ReactFlow, {
     getTransformForBounds,
     ConnectionMode,
 } from 'reactflow';
-import { ArrowDown, ArrowRight, RefreshCw, Camera, Circle, Trash, Trash2, PlusCircle, StickyNote, Download, List } from 'lucide-react';
+import { List, Search } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import 'reactflow/dist/style.css';
 
@@ -29,13 +29,26 @@ import NoteNode from './nodes/NoteNode';
 import FloatingEdge from './edges/FloatingEdge';
 import { FilteredResultsPanel } from './FilteredResultsPanel';
 import { NodeDetailsPanel } from './NodeDetailsPanel';
-import { getLayoutedElements } from '@/lib/layout';
-import { cn, formatDate, getSicDescription } from '@/lib/utils';
+import { getLayoutedElements, DEFAULT_LAYOUT_OPTIONS } from '@/lib/layout';
+import { tracePath, findRootNodeId } from '@/lib/connection-path';
+import { cn, formatDate } from '@/lib/utils';
 import { useSearchParams } from 'next/navigation';
 import { processDuplicates, mergeNodes as mergeNodesUtil } from '@/lib/matchUtils';
 import { chFetch } from '@/lib/client-fetch';
 import RateLimitDialog from './RateLimitDialog';
 import AIChatPanel from './AIChatPanel';
+import FiltersMenu from './canvas/FiltersMenu';
+import LayoutMenu from './canvas/LayoutMenu';
+import SpacingMenu from './canvas/SpacingMenu';
+import ExportMenu from './canvas/ExportMenu';
+import HelpDialog from './canvas/HelpDialog';
+import LoadingOverlay from './canvas/LoadingOverlay';
+import CanvasToolPalette from './canvas/CanvasToolPalette';
+import SelectionActionBar from './canvas/SelectionActionBar';
+import DepthSelect from './canvas/DepthSelect';
+import ExportOptionsDialog, { ExportFormat, ExportOptions } from './canvas/ExportOptionsDialog';
+import { buildExportSheets, buildFlatRows, countsByType, filterForJson } from '@/lib/export';
+import SummaryCards from './canvas/SummaryCards';
 
 const nodeTypes = {
     businessCard: BusinessCardNode,
@@ -53,8 +66,12 @@ function GraphCanvasContent() {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
+    const [loadingLabel, setLoadingLabel] = React.useState<string>("Searching Companies House…");
     const [error, setError] = React.useState<string | null>(null);
     const [layoutDirection, setLayoutDirection] = React.useState('FORCE');
+    const [linkDistance, setLinkDistance] = React.useState<number>(DEFAULT_LAYOUT_OPTIONS.linkDistance);
+    const [nodeSpacing, setNodeSpacing] = React.useState<number>(DEFAULT_LAYOUT_OPTIONS.nodeSpacing);
+    const [searchedCompanyName, setSearchedCompanyName] = React.useState<string | null>(null);
 
     const onConnect = useCallback(
         (params: Connection) => setEdges((eds) => addEdge({
@@ -69,11 +86,15 @@ function GraphCanvasContent() {
 
     // Layout Handler
     const onLayout = useCallback(
-        (direction: string) => {
+        (direction: string, overrideOpts?: { linkDistance?: number; nodeSpacing?: number }) => {
             const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
                 nodes,
                 edges,
-                direction
+                direction,
+                {
+                    linkDistance: overrideOpts?.linkDistance ?? linkDistance,
+                    nodeSpacing: overrideOpts?.nodeSpacing ?? nodeSpacing,
+                }
             );
 
             setNodes(layoutedNodes.map(n => ({ ...n, data: { ...n.data, onMerge: handleMergeNodes } })));
@@ -86,8 +107,27 @@ function GraphCanvasContent() {
                 fitView({ padding: 0.2, duration: 400 });
             });
         },
-        [nodes, edges, setNodes, setEdges, fitView]
+        [nodes, edges, setNodes, setEdges, fitView, linkDistance, nodeSpacing]
     );
+
+    const onSpacingChange = useCallback(
+        (next: { linkDistance: number; nodeSpacing: number }) => {
+            setLinkDistance(next.linkDistance);
+            setNodeSpacing(next.nodeSpacing);
+            onLayout(layoutDirection, next);
+        },
+        [onLayout, layoutDirection]
+    );
+
+    const onSpacingReset = useCallback(() => {
+        const next = {
+            linkDistance: DEFAULT_LAYOUT_OPTIONS.linkDistance,
+            nodeSpacing: DEFAULT_LAYOUT_OPTIONS.nodeSpacing,
+        };
+        setLinkDistance(next.linkDistance);
+        setNodeSpacing(next.nodeSpacing);
+        onLayout(layoutDirection, next);
+    }, [onLayout, layoutDirection]);
 
     const handleMergeNodes = useCallback((targetId: string, sourceId: string) => {
         setNodes(nds => {
@@ -130,21 +170,23 @@ function GraphCanvasContent() {
         ].filter(Boolean).join(', ');
     };
 
-    // Normalised key for address dedup — tolerates punctuation/whitespace/case
-    // differences between Companies House records for the same premises.
+    // Normalised key for address dedup. Companies House returns the same
+    // premises with different structured fields across endpoints — the
+    // registered-office payload typically has `premises: "Unit 4c"` +
+    // `address_line_1: "Park Road"`, while officer correspondence merges them
+    // into `address_line_1: "Unit 4c, Park Road"`. Concatenate premises +
+    // line1 before normalising so both forms collapse to the same token, then
+    // anchor on the postcode for identity.
+    const norm = (s: any) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const normalizeAddressKey = (addr: any) => {
         if (!addr) return '';
-        return [
-            addr.premises,
-            addr.address_line_1,
-            addr.address_line_2,
-            addr.locality,
-            addr.region,
-            addr.postal_code,
-            addr.country
-        ]
+        const pc = norm(addr.postal_code);
+        const place = norm(`${addr.premises || ''} ${addr.address_line_1 || ''}`);
+        if (pc) return `${pc}|${place}`;
+        // Fall back to a fuller key when no postcode is available (rare).
+        return [addr.premises, addr.address_line_1, addr.address_line_2, addr.locality, addr.region, addr.country]
             .filter(Boolean)
-            .map((s: string) => String(s).toLowerCase().replace(/[^a-z0-9]/g, ''))
+            .map(norm)
             .join('|');
     };
 
@@ -152,6 +194,7 @@ function GraphCanvasContent() {
         if (!query) return;
 
         const fetchData = async () => {
+            setLoadingLabel("Searching Companies House…");
             setLoading(true);
             setError(null);
             try {
@@ -180,6 +223,7 @@ function GraphCanvasContent() {
                 }
 
                 const { company, officers, pscs } = data;
+                setSearchedCompanyName(company?.company_name || null);
 
                 // Create Nodes
                 const companyNode: Node = {
@@ -507,9 +551,15 @@ function GraphCanvasContent() {
 
             while (queue.length > 0) {
                 const currId = queue.shift()!;
-                const currNode = nodes.find(n => n.id === currId);
 
-                if (currNode?.data?.type === 'company' && currId !== activeNodeId) {
+                // Only the hovered node expands. Every neighbour is terminal —
+                // otherwise hovering e.g. an address would pull in the
+                // attached officer and then *all* of that officer's other
+                // companies, even though those companies don't relate to the
+                // address. With this rule a hover highlights exactly: the
+                // node + its direct neighbours + the path back to the target
+                // (added separately below).
+                if (currId !== activeNodeId) {
                     continue;
                 }
 
@@ -530,6 +580,22 @@ function GraphCanvasContent() {
                     connectedEdgeIds.add(edge.id);
                 }
             });
+
+            // Also keep the path back to the originally-searched company at full
+            // opacity, so the user can see how the hovered node ties back to the
+            // search target without having to read each card.
+            const rootId = findRootNodeId(nodes);
+            if (rootId && rootId !== activeNodeId) {
+                const path = tracePath(rootId, activeNodeId, nodes, edges);
+                if (path) {
+                    connectedNodeIds.add(path.root.id);
+                    for (const hop of path.hops) {
+                        connectedNodeIds.add(hop.from.id);
+                        connectedNodeIds.add(hop.to.id);
+                        connectedEdgeIds.add(hop.edge.id);
+                    }
+                }
+            }
         }
 
         setVisibleNodeIds(visibleNodeIdsLocal);
@@ -901,6 +967,7 @@ function GraphCanvasContent() {
 
     const handleExpandNetwork = async () => {
         if (!selectedNode) return;
+        setLoadingLabel(`Expanding network (${expansionLevel} ${expansionLevel === 1 ? "hop" : "hops"})…`);
         setLoading(true);
         setIsDialogOpen(false);
 
@@ -974,6 +1041,22 @@ function GraphCanvasContent() {
         }
     };
 
+    const [canvasMode, setCanvasMode] = React.useState<'pan' | 'select'>('pan');
+    const [exportFormat, setExportFormat] = React.useState<ExportFormat | null>(null);
+
+    const handleRecolorSelected = useCallback((color: string | null) => {
+        const selectedIds = new Set(nodes.filter(n => n.selected).map(n => n.id));
+        if (selectedIds.size === 0) return;
+        setNodes(nds => nds.map(n => selectedIds.has(n.id)
+            ? { ...n, data: { ...n.data, customColor: color || undefined } }
+            : n
+        ));
+        if (selectedNode && selectedIds.has(selectedNode.id)) {
+            setCustomColor(color || "");
+            setSelectedNode((prev: any) => prev ? { ...prev, data: { ...prev.data, customColor: color || undefined } } : null);
+        }
+    }, [nodes, setNodes, selectedNode]);
+
     const handleDeleteSelected = () => {
         const selectedNodesIds = new Set(nodes.filter(n => n.selected).map(n => n.id));
         if (selectedNodesIds.size === 0) return;
@@ -1030,6 +1113,16 @@ function GraphCanvasContent() {
         }
     };
 
+    const exportFilename = (extension: string) => {
+        const slug = (searchedCompanyName || query || 'company-map')
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 60) || 'company-map';
+        const date = new Date().toISOString().slice(0, 10);
+        return `${slug}-network-${date}.${extension}`;
+    };
+
     const downloadImage = () => {
         const nodes = getNodes();
 
@@ -1060,61 +1153,26 @@ function GraphCanvasContent() {
                 },
             }).then((dataUrl) => {
                 const link = document.createElement('a');
-                link.download = 'company-map.png';
+                link.download = exportFilename('png');
                 link.href = dataUrl;
                 link.click();
             });
         }
     };
 
-    const exportToCSV = () => {
-        const rows: any[] = [];
-        const companies = nodes.filter(n => n.data.type === 'company');
+    const hasActiveFilter = statusFilters.length > 0 || sicFilters.length > 0;
+    const allExportCounts = useMemo(() => countsByType(nodes, edges), [nodes, edges]);
+    const filteredExportCounts = useMemo(() => {
+        if (!hasActiveFilter || visibleNodeIds.size === 0) return allExportCounts;
+        const scopedNodes = nodes.filter(n => visibleNodeIds.has(n.id));
+        const scopedIds = new Set(scopedNodes.map(n => n.id));
+        const scopedEdges = edges.filter(e => scopedIds.has(e.source) && scopedIds.has(e.target));
+        return countsByType(scopedNodes, scopedEdges);
+    }, [hasActiveFilter, visibleNodeIds, nodes, edges, allExportCounts]);
 
-        companies.forEach(company => {
-            const sics = (company.data.source?.sic_codes || []).map((c: any) => String(c));
-            const sicString = sics.map((code: string) => `${code} - ${getSicDescription(code)}`).join("; ");
-
-            const connectedEdges = edges.filter(e => e.source === company.id || e.target === company.id);
-
-            if (connectedEdges.length === 0) {
-                rows.push({
-                    "Company Name": company.data.label,
-                    "Company Number": company.id,
-                    "Company Status": company.data.status || "",
-                    "Nature of Business": sicString,
-                    "Company Address": company.data.address || "",
-                    "Connected Entity Name": "",
-                    "Connection Type": "",
-                    "Entity Address": "",
-                    "Entity Details": ""
-                });
-                return;
-            }
-
-            connectedEdges.forEach(edge => {
-                const isSource = edge.source === company.id;
-                const otherNodeId = isSource ? edge.target : edge.source;
-                const otherNode = nodes.find(n => n.id === otherNodeId);
-                
-                if (!otherNode || otherNode.data.type === 'address') return;
-                
-                rows.push({
-                    "Company Name": company.data.label,
-                    "Company Number": company.id,
-                    "Company Status": company.data.status || "",
-                    "Nature of Business": sicString,
-                    "Company Address": company.data.address || "",
-                    "Connected Entity Name": otherNode.data.label,
-                    "Connection Type": edge.label || otherNode.data.role || "",
-                    "Entity Address": otherNode.data.address || "",
-                    "Entity Details": otherNode.data.subtext || ""
-                });
-            });
-        });
-
+    const runExportCSV = (options: ExportOptions) => {
+        const rows = buildFlatRows(nodes, edges, options, visibleNodeIds);
         if (rows.length === 0) return;
-        
         const headers = Object.keys(rows[0]);
         const csvContent = [
             headers.join(","),
@@ -1125,10 +1183,78 @@ function GraphCanvasContent() {
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a");
         link.setAttribute("href", url);
-        link.setAttribute("download", `corporate_mapper_export_${new Date().toISOString().slice(0,10)}.csv`);
+        link.setAttribute("download", exportFilename('csv'));
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const runExportExcel = async (options: ExportOptions) => {
+        const sheets = buildExportSheets(nodes, edges, options, visibleNodeIds);
+        if (sheets.length === 0) return;
+        const XLSX = await import('xlsx');
+        const workbook = XLSX.utils.book_new();
+        sheets.forEach(({ name, rows }) => {
+            const worksheet = XLSX.utils.json_to_sheet(rows);
+            const headers = Object.keys(rows[0] || {});
+            worksheet['!cols'] = headers.map(h => {
+                const maxLen = Math.max(h.length, ...rows.map(r => String(r[h] ?? '').length));
+                return { wch: Math.min(60, Math.max(12, maxLen + 2)) };
+            });
+            // XLSX caps sheet names at 31 chars and disallows certain characters.
+            const safe = name.replace(/[\\\/?*\[\]:]/g, '_').slice(0, 31);
+            XLSX.utils.book_append_sheet(workbook, worksheet, safe);
+        });
+        XLSX.writeFile(workbook, exportFilename('xlsx'));
+    };
+
+    const runExportJSON = (options: ExportOptions) => {
+        const { nodes: filteredNodes, edges: filteredEdges } = filterForJson(nodes, edges, options, visibleNodeIds);
+        const payload = {
+            metadata: {
+                exportedAt: new Date().toISOString(),
+                searchQuery: query || null,
+                searchedCompanyName: searchedCompanyName || null,
+                layoutDirection,
+                linkDistance,
+                nodeSpacing,
+                nodeCount: filteredNodes.length,
+                edgeCount: filteredEdges.length,
+                exportOptions: options,
+            },
+            nodes: filteredNodes.map(n => ({
+                id: n.id,
+                type: n.type,
+                position: n.position,
+                data: n.data,
+            })),
+            edges: filteredEdges.map(e => ({
+                id: e.id,
+                source: e.source,
+                target: e.target,
+                label: e.label,
+                type: e.type,
+                data: e.data,
+            })),
+        };
+        const blob = new Blob([JSON.stringify(payload, null, 2)], {
+            type: 'application/json;charset=utf-8;',
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.setAttribute('href', url);
+        link.setAttribute('download', exportFilename('json'));
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
+    const handleExportConfirm = (options: ExportOptions) => {
+        if (exportFormat === 'csv') runExportCSV(options);
+        else if (exportFormat === 'excel') runExportExcel(options);
+        else if (exportFormat === 'json') runExportJSON(options);
     };
 
     const handleAddNode = useCallback((type: 'entity' | 'note') => {
@@ -1177,13 +1303,20 @@ function GraphCanvasContent() {
         setIsFilteredPanelOpen(false);
     }, [setCenter]);
 
+    // "Home" — recentre on a node without opening the details dialog, used by
+    // the target summary card so clicking the card feels like a navigation,
+    // not a drill-down.
+    const homeToNode = React.useCallback((node: Node) => {
+        setCenter(node.position.x, node.position.y, { zoom: 1.5, duration: 600 });
+    }, [setCenter]);
+
     return (
         <div className="flex flex-col h-full bg-slate-50 overflow-hidden relative" onContextMenu={(e) => e.preventDefault()}>
             {/* Main Header Container */}
-            <header className="flex-none bg-white">
-                <div className="px-4 py-4 flex items-start justify-between">
+            <header className="flex-none bg-white border-b border-slate-200">
+                <div className="px-4 py-4 flex items-start justify-between gap-6">
                     {/* Left side: Title and Tabs */}
-                    <div className="flex flex-col space-y-4">
+                    <div className="flex flex-col space-y-4 min-w-0">
                         {/* Title */}
                         <div className="flex items-center">
                             <h1 className="text-[20px] font-bold tracking-tight text-[#132B5C]">Company Explorer</h1>
@@ -1198,6 +1331,15 @@ function GraphCanvasContent() {
                                 OSINT Search
                             </button>
                         </div>
+                    </div>
+
+                    {/* Middle: condensed summary cards (target + canvas stats) */}
+                    <div className="flex-1 flex items-center justify-center min-w-0 pt-2">
+                        <SummaryCards
+                            nodes={nodes}
+                            edges={edges}
+                            onTargetClick={homeToNode}
+                        />
                     </div>
 
                     {/* Right side: Search Field */}
@@ -1229,239 +1371,73 @@ function GraphCanvasContent() {
                     </div>
                 </div>
 
-                {/* Quick Tools Bar */}
-                <div className="w-full h-[40px] bg-slate-50 border-y border-slate-200 flex items-center px-4 relative z-50">
-                    <span className="text-xs font-semibold text-slate-800 mr-6 shrink-0">Quick Tools</span>
+                {/* Compact toolbar — workflow ordered: Filter → Expand → Layout → View → Export */}
+                <div className="w-full bg-slate-50 border-t border-slate-200 flex items-center gap-3 px-4 h-12 relative z-50">
+                    <FiltersMenu
+                        availableStatuses={availableStatuses}
+                        availableSics={availableSics}
+                        statusFilters={statusFilters}
+                        sicFilters={sicFilters}
+                        onToggleStatus={(s) => setStatusFilters(prev => prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s])}
+                        onAddSic={(s) => setSicFilters(prev => [...prev, s])}
+                        onRemoveSic={(s) => setSicFilters(prev => prev.filter(x => x !== s))}
+                        onClearAll={() => { setStatusFilters([]); setSicFilters([]); }}
+                    />
 
-                    <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-                        {availableStatuses.length > 0 && (
-                            <>
-                                <span className="text-[11px] font-medium text-slate-500 mr-1 shrink-0">Filter Status:</span>
-                                <div className="flex gap-1.5 border-r border-slate-300 pr-3 mr-1">
-                                    {availableStatuses.map(status => (
-                                        <button
-                                            key={status}
-                                            onClick={() => {
-                                                setStatusFilters(prev => 
-                                                    prev.includes(status) 
-                                                        ? prev.filter(s => s !== status)
-                                                        : [...prev, status]
-                                                )
-                                            }}
-                                            className={cn(
-                                                "px-2.5 py-1 rounded text-[10px] font-bold uppercase border transition-colors shrink-0",
-                                                statusFilters.includes(status) 
-                                                    ? "bg-[#132B5C] text-white border-[#132B5C]"
-                                                    : "bg-white text-slate-500 border-slate-200 hover:bg-slate-100 focus:outline-none"
-                                            )}
-                                        >
-                                            {status}
-                                        </button>
-                                    ))}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                        
-                    <div className="flex items-center flex-1">
-                        {availableSics.length > 0 && (
-                            <div className="relative flex items-center ml-2 border-l border-slate-300 pl-3">
-                                <span className="text-[11px] font-medium text-slate-500 mr-2 shrink-0">Nature of Business:</span>
-                                <div className="flex gap-1 mr-2 flex-nowrap">
-                                    {sicFilters.map(sic => (
-                                        <span key={sic} className="px-2 py-0.5 bg-[#132B5C] text-white text-[10px] font-bold rounded flex items-center gap-1 shrink-0">
-                                            {sic}
-                                            <button onClick={() => setSicFilters(prev => prev.filter(s => s !== sic))} className="hover:text-slate-200 mt-0.5">&times;</button>
-                                        </span>
-                                    ))}
-                                </div>
-                                <div className="relative">
-                                    <input
-                                        type="text"
-                                        placeholder="Search SIC..."
-                                        value={sicSearchTerm}
-                                        onChange={(e) => {
-                                            setSicSearchTerm(e.target.value);
-                                            setIsSicDropdownOpen(true);
-                                        }}
-                                        onFocus={() => setIsSicDropdownOpen(true)}
-                                        onBlur={() => setTimeout(() => setIsSicDropdownOpen(false), 200)}
-                                        className="w-36 px-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:border-slate-400 shrink-0"
-                                    />
-                                    {isSicDropdownOpen && (
-                                        <div className="absolute top-full mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-[0px_4px_9px_0px_rgba(23,26,31,0.11),0px_0px_2px_0px_rgba(23,26,31,0.12)] z-[60] max-h-48 overflow-y-auto right-0 md:left-0 md:right-auto">
-                                            {availableSics
-                                                .filter(sic => !sicFilters.includes(sic))
-                                                .filter(sic => {
-                                                    if (!sicSearchTerm) return true;
-                                                    const term = sicSearchTerm.toLowerCase();
-                                                    const desc = getSicDescription(sic).toLowerCase();
-                                                    return String(sic).toLowerCase().includes(term) || desc.includes(term);
-                                                })
-                                                .map(sic => (
-                                                    <div
-                                                        key={sic}
-                                                        className="px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 cursor-pointer border-b border-slate-100 last:border-0"
-                                                        onClick={() => {
-                                                            setSicFilters(prev => [...prev, sic]);
-                                                            setSicSearchTerm("");
-                                                            setIsSicDropdownOpen(false);
-                                                        }}
-                                                    >
-                                                        <div className="font-bold text-slate-900">{sic}</div>
-                                                        <div className="text-[10px] text-slate-500 line-clamp-2">{getSicDescription(sic)}</div>
-                                                    </div>
-                                                ))}
-                                            {availableSics.filter(sic => !sicFilters.includes(sic)).filter(sic => String(sic).toLowerCase().includes(sicSearchTerm.toLowerCase()) || getSicDescription(sic).toLowerCase().includes(sicSearchTerm.toLowerCase())).length === 0 && (
-                                                <div className="px-3 py-2 text-xs text-slate-500 text-center italic">No matching businesses found</div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                        )}
+                    <div className="w-px h-5 bg-slate-200" />
 
-                        {/* Add Node Buttons */}
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleAddNode('entity')}
-                            className="h-7 text-xs bg-white text-slate-700 hover:bg-slate-100 border-slate-200"
-                        >
-                            <PlusCircle className="h-3.5 w-3.5 mr-1.5" />
-                            Entity
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleAddNode('note')}
-                            className="h-7 text-xs bg-yellow-50 text-yellow-700 hover:bg-yellow-100 border-yellow-200 mr-2"
-                        >
-                            <StickyNote className="h-3.5 w-3.5 mr-1.5" />
-                            Note
-                        </Button>
-
-                        <div className="w-px h-4 bg-slate-300 mr-2" />
-
-                        {/* Level Expansion Dropdown */}
-                        <div className="flex items-center">
-                            <span className="text-[11px] font-medium text-slate-500 mr-1.5">Expand:</span>
-                            <select
-                                value={expansionLevel}
-                                onChange={(e) => setExpansionLevel(Number(e.target.value))}
-                                className="text-xs font-medium text-slate-700 bg-transparent border border-slate-200 rounded px-1.5 py-1 focus:outline-none cursor-pointer hover:bg-slate-100"
-                            >
-                                <option value={1}>Level 1</option>
-                                <option value={2}>Level 2</option>
-                                <option value={3}>Level 3</option>
-                                <option value={4}>Level 4</option>
-                                <option value={5}>Level 5</option>
-                            </select>
+                    {/* Combined Depth + Expand control — the primary action */}
+                    <div className="inline-flex items-stretch h-8 rounded-md border border-[#132B5C] overflow-hidden shadow-sm">
+                        <div className="border-r border-slate-200 flex">
+                            <DepthSelect value={expansionLevel} onChange={setExpansionLevel} />
                         </div>
-
-                        <Button
-                            variant="default"
-                            size="sm"
+                        <button
                             onClick={handleExpandNetwork}
                             disabled={!selectedNode || loading}
-                            className="h-7 text-xs bg-[#132B5C] text-white hover:bg-[#132B5C]/90 disabled:opacity-50 ml-1 px-3"
+                            className="inline-flex items-center gap-1 px-3 bg-[#132B5C] text-white text-xs font-semibold hover:bg-[#0d1f44] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                             title={selectedNode ? `Expand ${selectedNode.data.label}` : "Select a node to expand"}
                         >
-                            {loading ? "..." : "Expand"}
-                        </Button>
-
-                        <div className="w-px h-4 bg-slate-300 mx-2" />
-
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handleDeleteSelected}
-                            disabled={!nodes.some(n => n.selected)}
-                            className="h-7 w-7 text-slate-600 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent"
-                            title="Delete Selected"
-                        >
-                            <Trash className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={handleDeleteBranch}
-                            disabled={!nodes.some(n => n.selected)}
-                            className="h-7 w-7 text-slate-600 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent"
-                            title="Delete Selected & Isolated Sub-branches"
-                        >
-                            <Trash2 className="h-4 w-4" />
-                        </Button>
-
-                        <div className="w-px h-4 bg-slate-300 mx-2" />
-
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => onLayout('TB')}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Vertical Layout"
-                        >
-                            <ArrowDown className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => onLayout('LR')}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Horizontal Layout"
-                        >
-                            <ArrowRight className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => onLayout(layoutDirection)}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Auto Align"
-                        >
-                            <RefreshCw className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => onLayout('RADIAL')}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Radial Layout"
-                        >
-                            <Circle className="h-4 w-4" />
-                        </Button>
-
-                        <div className="w-px h-4 bg-slate-300 mx-2" />
-
-                        <Button
-                            variant={isFilteredPanelOpen ? "default" : "ghost"}
-                            size="icon"
-                            onClick={() => setIsFilteredPanelOpen(!isFilteredPanelOpen)}
-                            className={cn("h-7 w-7", isFilteredPanelOpen ? "bg-[#132B5C] text-white hover:bg-[#132B5C]/90" : "text-slate-600 hover:text-slate-900 hover:bg-slate-200")}
-                            title="Toggle Filtered Results Sidebar"
-                        >
-                            <List className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={exportToCSV}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Export Data to CSV"
-                        >
-                            <Download className="h-4 w-4" />
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={downloadImage}
-                            className="h-7 w-7 text-slate-600 hover:text-slate-900 hover:bg-slate-200"
-                            title="Download Screenshot"
-                        >
-                            <Camera className="h-4 w-4" />
-                        </Button>
+                            <Search className="h-3.5 w-3.5" />
+                            {loading ? "Expanding…" : "Expand"}
+                        </button>
                     </div>
+
+                    <div className="w-px h-5 bg-slate-200" />
+
+                    <LayoutMenu onApply={(d) => onLayout(d)} current={layoutDirection} />
+
+                    <SpacingMenu
+                        linkDistance={linkDistance}
+                        nodeSpacing={nodeSpacing}
+                        onChange={onSpacingChange}
+                        onReset={onSpacingReset}
+                    />
+
+                    <div className="flex-1" />
+
+                    <button
+                        onClick={() => setIsFilteredPanelOpen(!isFilteredPanelOpen)}
+                        className={cn(
+                            "inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium border transition-colors",
+                            isFilteredPanelOpen
+                                ? "bg-[#132B5C] text-white border-[#132B5C] hover:bg-[#0d1f44]"
+                                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
+                        )}
+                        title="Toggle filtered results sidebar"
+                    >
+                        <List className="h-3.5 w-3.5" />
+                        Results
+                    </button>
+
+                    <ExportMenu
+                        onExportCSV={() => setExportFormat('csv')}
+                        onExportExcel={() => setExportFormat('excel')}
+                        onExportJSON={() => setExportFormat('json')}
+                        onDownloadScreenshot={downloadImage}
+                    />
+
+                    <HelpDialog />
+
                 </div>
             </header>
 
@@ -1481,18 +1457,37 @@ function GraphCanvasContent() {
                     nodeTypes={nodeTypes}
                     isValidConnection={() => true}
                     connectionMode={ConnectionMode.Loose}
+                    // In "select" mode left-drag draws a rectangle and pan is
+                    // restricted to middle-mouse. Back to defaults in "pan" mode.
+                    selectionOnDrag={canvasMode === 'select'}
+                    panOnDrag={canvasMode === 'select' ? [1, 2] : true}
                     fitView
-                    className="bg-slate-50"
+                    className={cn("bg-slate-50", canvasMode === 'select' && "cursor-crosshair")}
                 >
                     <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#cbd5e1" />
                     <Controls className="bg-white border-slate-200 shadow-sm text-slate-900" />
-
+                    <SelectionActionBar
+                        nodes={nodes}
+                        onDelete={handleDeleteSelected}
+                        onDeleteBranch={handleDeleteBranch}
+                        onExpand={handleExpandNetwork}
+                        canExpand={!!selectedNode && !loading}
+                        onRecolor={handleRecolorSelected}
+                    />
                 </ReactFlow>
+                <CanvasToolPalette
+                    onAddNode={handleAddNode}
+                    mode={canvasMode}
+                    onModeChange={setCanvasMode}
+                />
+                <LoadingOverlay active={loading} label={loadingLabel} />
             </div>
 
             <NodeDetailsPanel
                 node={selectedNode}
                 isOpen={isDialogOpen}
+                nodes={nodes}
+                edges={edges}
                 onClose={() => setIsDialogOpen(false)}
                 onExpand={handleExpandNetwork}
                 onSave={(color, notes) => {
@@ -1538,6 +1533,15 @@ function GraphCanvasContent() {
                 onNodeClick={focusNode}
             />
             <AIChatPanel nodes={nodes} edges={edges} />
+            <ExportOptionsDialog
+                open={exportFormat !== null}
+                onOpenChange={(open) => { if (!open) setExportFormat(null); }}
+                format={exportFormat}
+                allCounts={allExportCounts}
+                filteredCounts={filteredExportCounts}
+                hasActiveFilter={hasActiveFilter}
+                onConfirm={handleExportConfirm}
+            />
         </div>
     );
 }

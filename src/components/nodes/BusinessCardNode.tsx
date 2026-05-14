@@ -1,8 +1,36 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
 import { cn, getSicDescription } from '@/lib/utils';
-import { Building2, User, MapPin, Crown } from 'lucide-react';
+import { Building2, User, MapPin, Crown, ExternalLink } from 'lucide-react';
 import { Button } from "@/components/ui/button";
+
+const CH_BASE = 'https://find-and-update.company-information.service.gov.uk';
+
+const getCompaniesHouseUrl = (id: string, data: any): string | null => {
+    const type = data?.type || 'company';
+    // PSC and officer links sometimes come directly from the Companies House API
+    const apiSelf: string | undefined = data?.source?.links?.self;
+    if (apiSelf && typeof apiSelf === 'string' && apiSelf.startsWith('/')) {
+        return `${CH_BASE}${apiSelf}`;
+    }
+
+    switch (type) {
+        case 'company': {
+            // Custom nodes don't have a real company_number — bail out.
+            if (data?.isCustom) return null;
+            const num = data?.source?.company_number || id;
+            if (!num) return null;
+            return `${CH_BASE}/company/${num}`;
+        }
+        case 'officer': {
+            const officerId = data?.officer_id || data?.source?.officer_id;
+            if (!officerId) return null;
+            return `${CH_BASE}/officers/${officerId}/appointments`;
+        }
+        default:
+            return null;
+    }
+};
 
 const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
     const type = data.type || 'company'; // default to company
@@ -43,6 +71,8 @@ const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
     const isCompany = type === 'company';
     const isDualRole = !!data.isDualRole;
 
+    const chUrl = getCompaniesHouseUrl(id, data);
+
     const formatDate = (dateString: string) => {
         if (!dateString) return null;
         try {
@@ -78,7 +108,20 @@ const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
                     <div className="font-bold text-slate-900 text-sm leading-tight line-clamp-2">
                         {data.label}
                     </div>
-                    <div className="shrink-0 mt-0.5">
+                    <div className="shrink-0 mt-0.5 flex items-center gap-1.5">
+                        {chUrl && (
+                            <a
+                                href={chUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                title="Open on Companies House"
+                                className="nodrag inline-flex items-center justify-center h-4 w-4 rounded text-slate-400 hover:text-[#132B5C] hover:bg-slate-100 transition-colors"
+                            >
+                                <ExternalLink className="h-3 w-3" />
+                            </a>
+                        )}
                         {getIcon()}
                     </div>
                 </div>

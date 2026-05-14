@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Node } from 'reactflow';
+import { Node, Edge } from 'reactflow';
 import { Building2, User, MapPin, FileText, Calendar, Globe, Briefcase, PoundSterling, X, ChevronRight, ExternalLink } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { cn, formatCompanyType, formatJurisdiction, getSicDescription } from "@/lib/utils";
 import { chFetch } from "@/lib/client-fetch";
+import ConnectionPathCard from "./ConnectionPathCard";
 
 interface NodeDetailsPanelProps {
     node: Node | null;
@@ -12,9 +13,11 @@ interface NodeDetailsPanelProps {
     onExpand: () => void;
     onSave: (customColor: string, notes: string) => void;
     onNodeUpdate: (data: any) => void;
+    nodes?: Node[];
+    edges?: Edge[];
 }
 
-export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNodeUpdate }: NodeDetailsPanelProps) {
+export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNodeUpdate, nodes = [], edges = [] }: NodeDetailsPanelProps) {
     const [customColor, setCustomColor] = useState("");
     const [notes, setNotes] = useState("");
     const [editLabel, setEditLabel] = useState("");
@@ -199,6 +202,11 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
 
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50/50">
+
+                {/* Connection path back to the originally searched company */}
+                {node && nodes.length > 0 && edges.length > 0 && (
+                    <ConnectionPathCard node={node} nodes={nodes} edges={edges} />
+                )}
 
                 {/* Overview Card */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 space-y-4">

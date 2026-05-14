@@ -5,7 +5,27 @@ import * as d3 from 'd3-force';
 const nodeWidth = 240;
 const nodeHeight = 80;
 
-export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'FORCE') => {
+export interface LayoutOptions {
+    // Edge / connector length between linked nodes (FORCE/RADIAL/dagre ranksep)
+    linkDistance?: number;
+    // Minimum spacing between unconnected nodes (FORCE collide radius / dagre nodesep)
+    nodeSpacing?: number;
+}
+
+export const DEFAULT_LAYOUT_OPTIONS: Required<LayoutOptions> = {
+    linkDistance: 350,
+    nodeSpacing: 200,
+};
+
+export const getLayoutedElements = (
+    nodes: Node[],
+    edges: Edge[],
+    direction = 'FORCE',
+    options: LayoutOptions = {}
+) => {
+    const linkDistance = options.linkDistance ?? DEFAULT_LAYOUT_OPTIONS.linkDistance;
+    const nodeSpacing = options.nodeSpacing ?? DEFAULT_LAYOUT_OPTIONS.nodeSpacing;
+
     if (direction === 'FORCE') {
         // Clone nodes and edges for simulation
         const simNodes = nodes.map((node) => ({
@@ -28,11 +48,13 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'F
             node.y = node.y || (Math.random() - 0.5) * 2000;
         });
 
+        // Repulsion scales with spacing so larger gaps don't collapse back from charge pull.
+        const chargeStrength = -Math.max(1000, nodeSpacing * 20);
         const simulation = d3.forceSimulation(simNodes as any)
-            .force('link', d3.forceLink(simLinks as any).id((d: any) => d.id).distance(350).strength(0.5)) // Longer links
-            .force('charge', d3.forceManyBody().strength(-4000).distanceMax(1500)) // Massive repel to create spiderweb
-            .force('center', d3.forceCenter(0, 0)) // Center around 0,0
-            .force('collide', d3.forceCollide().radius(200).iterations(3)); // Prevent overlapping bounds
+            .force('link', d3.forceLink(simLinks as any).id((d: any) => d.id).distance(linkDistance).strength(0.5))
+            .force('charge', d3.forceManyBody().strength(chargeStrength).distanceMax(1500))
+            .force('center', d3.forceCenter(0, 0))
+            .force('collide', d3.forceCollide().radius(nodeSpacing).iterations(3));
 
         simulation.stop();
         for (let i = 0; i < 400; i++) {
@@ -95,8 +117,8 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'F
             nodesByLevel.get(level)!.push(node);
         });
 
-        // Position nodes
-        const baseRadius = 500; // Sufficient radius to avoid text overlap
+        // Position nodes — radial ring distance tracks the connector-length control.
+        const baseRadius = Math.max(200, linkDistance + 150);
 
         nodesByLevel.forEach((levelNodes, level) => {
             if (level === 0) {
@@ -124,8 +146,8 @@ export const getLayoutedElements = (nodes: Node[], edges: Edge[], direction = 'F
 
     dagreGraph.setGraph({
         rankdir: direction,
-        nodesep: 200,
-        ranksep: 120
+        nodesep: nodeSpacing,
+        ranksep: Math.max(60, linkDistance / 3)
     });
 
     nodes.forEach((node) => {
