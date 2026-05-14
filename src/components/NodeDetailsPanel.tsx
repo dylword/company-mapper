@@ -3,6 +3,7 @@ import { Node } from 'reactflow';
 import { Building2, User, MapPin, FileText, Calendar, Globe, Briefcase, PoundSterling, X, ChevronRight, ExternalLink } from 'lucide-react';
 import { Button } from "@/components/ui/button";
 import { cn, formatCompanyType, formatJurisdiction, getSicDescription } from "@/lib/utils";
+import { chFetch } from "@/lib/client-fetch";
 
 interface NodeDetailsPanelProps {
     node: Node | null;
@@ -49,7 +50,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
             const fetchFullDetails = async () => {
                 setIsLoadingDetails(true);
                 try {
-                    const res = await fetch(`/api/company/${nodeId}`);
+                    const res = await chFetch(`/api/company/${nodeId}`);
                     const json = await res.json();
 
                     if (json.company) {
@@ -90,7 +91,7 @@ export function NodeDetailsPanel({ node, isOpen, onClose, onExpand, onSave, onNo
             const fetchLinked = async () => {
                 setIsLoadingLinked(true);
                 try {
-                    const res = await fetch(`/api/officer/${officerId}/appointments`);
+                    const res = await chFetch(`/api/officer/${officerId}/appointments`);
                     const json = await res.json();
                     if (json.items) {
                         setLinkedCompanies(json.items);

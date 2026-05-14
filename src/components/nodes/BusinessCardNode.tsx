@@ -89,7 +89,7 @@ const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
                 </div>
 
                 {/* Optional: Extra details if needed */}
-                {(data.subtext || data.status || data.country_of_residence || data.address || data.source?.sic_codes) && (
+                {(data.subtext || data.status || data.country_of_residence || data.address || (type !== 'address' && data.source?.sic_codes)) && (
                     <div className="mt-2 text-xs text-slate-400 border-t border-slate-100 pt-1 flex flex-col gap-0.5">
                         {data.subtext && <span>{data.subtext}</span>}
                         {data.status && (
@@ -102,7 +102,7 @@ const BusinessCardNode = ({ id, data, selected }: NodeProps) => {
                         )}
                         {data.country_of_residence && <span>{data.country_of_residence}</span>}
                         {data.address && <span className="truncate">{data.address}</span>}
-                        {data.source?.sic_codes && data.source.sic_codes.length > 0 && (
+                        {type !== 'address' && data.source?.sic_codes && data.source.sic_codes.length > 0 && (
                             <span className="truncate border border-slate-200 bg-slate-50 text-slate-500 rounded px-1.5 py-0.5 mt-1 font-medium text-[10px]" title={getSicDescription(data.source.sic_codes[0])}>
                                 {data.source.sic_codes[0]}: {getSicDescription(data.source.sic_codes[0])}
                                 {data.source.sic_codes.length > 1 && ` (+${data.source.sic_codes.length - 1})`}

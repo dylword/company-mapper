@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchFromCompaniesHouse } from '@/lib/api-client';
+import { chErrorResponse } from '@/lib/api-response';
 
 export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
@@ -15,7 +16,6 @@ export async function GET(request: Request) {
         const data = await fetchFromCompaniesHouse(`/advanced-search/companies?location=${encodeURIComponent(location)}&size=20`);
         return NextResponse.json(data);
     } catch (error: any) {
-        console.error("Address search error:", error);
-        return NextResponse.json({ error: error.message || "Failed to search address" }, { status: 500 });
+        return chErrorResponse(error);
     }
 }

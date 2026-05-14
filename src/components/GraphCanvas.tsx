@@ -33,6 +33,9 @@ import { getLayoutedElements } from '@/lib/layout';
 import { cn, formatDate, getSicDescription } from '@/lib/utils';
 import { useSearchParams } from 'next/navigation';
 import { processDuplicates, mergeNodes as mergeNodesUtil } from '@/lib/matchUtils';
+import { chFetch } from '@/lib/client-fetch';
+import RateLimitDialog from './RateLimitDialog';
+import AIChatPanel from './AIChatPanel';
 
 const nodeTypes = {
     businessCard: BusinessCardNode,
@@ -46,7 +49,7 @@ const edgeTypes = {
 function GraphCanvasContent() {
     const searchParams = useSearchParams();
     const query = searchParams.get('q');
-    const { getNodes, getViewport, screenToFlowPosition, setCenter } = useReactFlow();
+    const { getNodes, getViewport, screenToFlowPosition, setCenter, fitView } = useReactFlow();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = React.useState(true);
@@ -76,8 +79,14 @@ function GraphCanvasContent() {
             setNodes(layoutedNodes.map(n => ({ ...n, data: { ...n.data, onMerge: handleMergeNodes } })));
             setEdges([...layoutedEdges]);
             setLayoutDirection(direction);
+
+            // Re-frame the viewport so the user sees the re-laid-out graph
+            // instead of staring at the area they had panned to.
+            window.requestAnimationFrame(() => {
+                fitView({ padding: 0.2, duration: 400 });
+            });
         },
-        [nodes, edges, setNodes, setEdges]
+        [nodes, edges, setNodes, setEdges, fitView]
     );
 
     const handleMergeNodes = useCallback((targetId: string, sourceId: string) => {
@@ -111,6 +120,7 @@ function GraphCanvasContent() {
     const formatAddress = (addr: any) => {
         if (!addr) return undefined;
         return [
+            addr.premises,
             addr.address_line_1,
             addr.address_line_2,
             addr.locality,
@@ -118,6 +128,24 @@ function GraphCanvasContent() {
             addr.postal_code,
             addr.country
         ].filter(Boolean).join(', ');
+    };
+
+    // Normalised key for address dedup — tolerates punctuation/whitespace/case
+    // differences between Companies House records for the same premises.
+    const normalizeAddressKey = (addr: any) => {
+        if (!addr) return '';
+        return [
+            addr.premises,
+            addr.address_line_1,
+            addr.address_line_2,
+            addr.locality,
+            addr.region,
+            addr.postal_code,
+            addr.country
+        ]
+            .filter(Boolean)
+            .map((s: string) => String(s).toLowerCase().replace(/[^a-z0-9]/g, ''))
+            .join('|');
     };
 
     useEffect(() => {
@@ -130,7 +158,7 @@ function GraphCanvasContent() {
                 let companyNumber = query;
 
                 if (query.length !== 8 || isNaN(Number(query))) {
-                    const searchRes = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                    const searchRes = await chFetch(`/api/search?q=${encodeURIComponent(query)}`);
                     const searchData = await searchRes.json();
 
                     if (searchData.error) {
@@ -144,7 +172,7 @@ function GraphCanvasContent() {
                     }
                 }
 
-                const res = await fetch(`/api/company/${companyNumber}`);
+                const res = await chFetch(`/api/company/${companyNumber}`);
                 const data = await res.json();
 
                 if (data.error) {
@@ -207,55 +235,32 @@ function GraphCanvasContent() {
                         const addressLabel = formatAddress(officer.address);
                         if (!addressLabel) return;
 
+                        const addressKey = normalizeAddressKey(officer.address);
                         const officerId = `officer-${officer.officer_id || index}`;
-                        const addressId = `addr-${officerId}`; // Unique ID for this specific officer's address node instance? 
-                        // Or should we deduplicate addresses? 
-                        // "sit tightly and just under the director node" suggests a dedicated node per director might be better for layout 
-                        // unless we want to show shared addresses. 
-                        // Let's deduplicate by address string to show connections, but for layout "tightly under" might be tricky if shared.
-                        // Let's try deduplicating first as that's more "graph-like".
 
-                        // Actually, to ensure it sits "tightly under", maybe we treat it as a child? 
-                        // But we are using a flat graph. 
-                        // Let's stick to standard nodes for now.
-
-                        const existingAddressNode = officerAddressNodes.find(n => n.data.label === addressLabel) ||
-                            (addressLabel === formatAddress(company.registered_office_address) ? companyNode : null); // Check if matches company address? No, companyNode is a company.
-
-                        // Let's just make a new address node if it doesn't exist in our list
-                        let addressNodeId = `address-${addressLabel.replace(/\s+/g, '-').toLowerCase().slice(0, 20)}-${index}`; // simple ID generation
-
-                        // Better ID strategy: hash or just use the label if unique enough?
-                        // Let's use a prefix and simple check.
-                        const foundNode = officerAddressNodes.find(n => n.data.label === addressLabel);
+                        let addressNodeId: string;
+                        const foundNode = officerAddressNodes.find(n => n.data.addressKey === addressKey);
+                        const companyAddressKey = normalizeAddressKey(company.registered_office_address);
 
                         if (foundNode) {
                             addressNodeId = foundNode.id;
+                        } else if (addressKey && addressKey === companyAddressKey) {
+                            // Same premises as the registered office — reuse that node.
+                            addressNodeId = 'address-1';
                         } else {
-                            // Check if it matches the main company address?
-                            const companyAddressLabel = formatAddress(company.registered_office_address);
-                            if (addressLabel === companyAddressLabel) {
-                                // If it matches company address, do we link to the existing company address node?
-                                // The existing code creates 'address-1' for company address.
-                                addressNodeId = 'address-1';
-                            } else {
-                                addressNodeId = `address-${index}-${officer.officer_id || index}`; // Unique per officer for now to ensure "tightly under"? 
-                                // No, user said "same sidebar/ expand connection functionality like normal company addresses"
-                                // So it should be a proper address node.
-
-                                // Let's try to deduplicate globally if possible, but for now let's just add it.
-                                officerAddressNodes.push({
-                                    id: addressNodeId,
-                                    type: 'businessCard',
-                                    data: {
-                                        label: addressLabel,
-                                        role: 'Correspondence Address',
-                                        type: 'address',
-                                        source: { address: officer.address } // Mock source
-                                    },
-                                    position: { x: 0, y: 0 },
-                                });
-                            }
+                            addressNodeId = `address-${index}-${officer.officer_id || index}`;
+                            officerAddressNodes.push({
+                                id: addressNodeId,
+                                type: 'businessCard',
+                                data: {
+                                    label: addressLabel,
+                                    role: 'Correspondence Address',
+                                    type: 'address',
+                                    addressKey,
+                                    source: { address: officer.address }
+                                },
+                                position: { x: 0, y: 0 },
+                            });
                         }
 
                         officerAddressEdges.push({
@@ -301,9 +306,10 @@ function GraphCanvasContent() {
                     id: 'address-1',
                     type: 'businessCard',
                     data: {
-                        label: [company.registered_office_address.address_line_1, company.registered_office_address.locality].filter(Boolean).join(', '),
+                        label: formatAddress(company.registered_office_address),
                         role: 'Registered Address',
                         type: 'address',
+                        addressKey: normalizeAddressKey(company.registered_office_address),
                         source: company // Store company as source for address
                     },
                     position: { x: 0, y: 0 },
@@ -378,7 +384,7 @@ function GraphCanvasContent() {
         };
 
         fetchData();
-    }, [query, setNodes, setEdges, layoutDirection]);
+    }, [query, setNodes, setEdges]);
 
     const [selectedNode, setSelectedNode] = React.useState<Node | null>(null);
     const [hoveredNodeId, setHoveredNodeId] = React.useState<string | null>(null);
@@ -598,7 +604,7 @@ function GraphCanvasContent() {
         const allNeighbors: Node[] = []; // To track all found neighbors for recursion
 
         if (nodeToExpand.data.type?.includes('officer') && nodeToExpand.data.officer_id) {
-            const res = await fetch(`/api/officer/${nodeToExpand.data.officer_id}/appointments`);
+            const res = await chFetch(`/api/officer/${nodeToExpand.data.officer_id}/appointments`);
             const data = await res.json();
 
             if (data.items) {
@@ -617,7 +623,7 @@ function GraphCanvasContent() {
                                 return { item, company: existingNode.data.source, existingNode };
                             }
 
-                            const companyRes = await fetch(`/api/company/${nodeId}`);
+                            const companyRes = await chFetch(`/api/company/${nodeId}`);
                             const companyData = await companyRes.json();
 
                             if (companyData.company) {
@@ -671,8 +677,8 @@ function GraphCanvasContent() {
                     let addressEdge: Edge | null = null;
                     const itemAddress = item.address;
                     if (itemAddress) {
-                        const addressLabel = [itemAddress.address_line_1, itemAddress.locality].filter(Boolean).join(', ');
-                        const existingAddressNode = currentNodes.find(n => n.data.type === 'address' && n.data.label === addressLabel);
+                        const addressKey = normalizeAddressKey(itemAddress);
+                        const existingAddressNode = currentNodes.find(n => n.data.type === 'address' && n.data.addressKey === addressKey);
                         if (existingAddressNode) {
                             addressEdge = {
                                 id: `e-${nodeId}-${existingAddressNode.id}`,
@@ -698,7 +704,7 @@ function GraphCanvasContent() {
                             type: 'company',
                             subtext: company ? `Inc: ${formatDate(company.date_of_creation)}` : `Appointed: ${formatDate(item.appointed_on)}`,
                             status: company?.company_status || item.company_status,
-                            address: company ? formatAddress(company.registered_office_address) : (itemAddress ? [itemAddress.address_line_1, itemAddress.locality].filter(Boolean).join(', ') : undefined),
+                            address: company ? formatAddress(company.registered_office_address) : formatAddress(itemAddress),
                             source: company || item.appointed_to
                         },
                         position: { x: 0, y: 0 },
@@ -724,7 +730,7 @@ function GraphCanvasContent() {
                 });
             }
         } else if (nodeToExpand.data.type === 'company') {
-            const res = await fetch(`/api/company/${nodeToExpand.id}`);
+            const res = await chFetch(`/api/company/${nodeToExpand.id}`);
             const data = await res.json();
 
             if (data.officers) {
@@ -796,20 +802,17 @@ function GraphCanvasContent() {
                     if (officer.address) {
                         const addressLabel = formatAddress(officer.address);
                         if (addressLabel) {
-                            // Check if address node already exists in currentNodes or newNodes
-                            let addressNodeId = `address-${addressLabel.replace(/\s+/g, '-').toLowerCase().slice(0, 20)}-${index}`;
+                            const addressKey = normalizeAddressKey(officer.address);
+                            let addressNodeId = `address-${addressKey.slice(0, 32) || index}-${index}`;
 
-                            // Simple dedupe check against current graph
-                            const existingAddress = currentNodes.find(n => n.data.type === 'address' && n.data.label === addressLabel);
+                            const existingAddress = currentNodes.find(n => n.data.type === 'address' && n.data.addressKey === addressKey);
                             if (existingAddress) {
                                 addressNodeId = existingAddress.id;
                             } else {
-                                // Check newNodes
-                                const newAddress = newNodes.find(n => n.data.type === 'address' && n.data.label === addressLabel);
+                                const newAddress = newNodes.find(n => n.data.type === 'address' && n.data.addressKey === addressKey);
                                 if (newAddress) {
                                     addressNodeId = newAddress.id;
                                 } else {
-                                    // Create new address node
                                     const newAddressNode: Node = {
                                         id: addressNodeId,
                                         type: 'businessCard',
@@ -817,6 +820,7 @@ function GraphCanvasContent() {
                                             label: addressLabel,
                                             role: 'Correspondence Address',
                                             type: 'address',
+                                            addressKey,
                                             source: { address: officer.address }
                                         },
                                         position: { x: 0, y: 0 },
@@ -843,7 +847,7 @@ function GraphCanvasContent() {
                 });
             }
         } else if (nodeToExpand.data.type === 'address') {
-            const res = await fetch(`/api/search/address?location=${encodeURIComponent(nodeToExpand.data.label)}`);
+            const res = await chFetch(`/api/search/address?location=${encodeURIComponent(nodeToExpand.data.label)}`);
             const data = await res.json();
 
             if (data.items) {
@@ -1525,7 +1529,7 @@ function GraphCanvasContent() {
                     setSelectedNode((prev: any) => prev ? { ...prev, data: { ...prev.data, ...updatedData } } : null);
                 }}
             />
-            <FilteredResultsPanel 
+            <FilteredResultsPanel
                 isOpen={isFilteredPanelOpen}
                 onClose={() => setIsFilteredPanelOpen(false)}
                 nodes={nodes}
@@ -1533,6 +1537,7 @@ function GraphCanvasContent() {
                 visibleNodeIds={visibleNodeIds}
                 onNodeClick={focusNode}
             />
+            <AIChatPanel nodes={nodes} edges={edges} />
         </div>
     );
 }
@@ -1541,6 +1546,7 @@ export function GraphCanvas() {
     return (
         <ReactFlowProvider>
             <GraphCanvasContent />
+            <RateLimitDialog />
         </ReactFlowProvider>
     );
 }

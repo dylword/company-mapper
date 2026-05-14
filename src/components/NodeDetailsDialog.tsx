@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Node } from 'reactflow';
+import { chFetch } from '@/lib/client-fetch';
 import { Building2, User, MapPin, FileText, Calendar, Globe, Briefcase, PoundSterling } from 'lucide-react';
 
 interface NodeDetailsDialogProps {
@@ -35,7 +36,7 @@ export function NodeDetailsDialog({ node, onClose, onExpand, onSave, onNodeUpdat
             const fetchFullDetails = async () => {
                 setIsLoadingDetails(true);
                 try {
-                    const res = await fetch(`/api/company/${node.id}`);
+                    const res = await chFetch(`/api/company/${node.id}`);
                     const json = await res.json();
 
                     if (json.company) {

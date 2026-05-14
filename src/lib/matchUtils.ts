@@ -125,7 +125,7 @@ export const processDuplicates = (nodes: Node[], edges: any[]) => {
     consolidatedNodes = consolidatedNodes.filter(n => !nodesToRemove.has(n.id));
 
     // Consolidate edges
-    const consolidatedEdges = edges.map(edge => {
+    const remappedEdges = edges.map(edge => {
         let newSource = edge.source;
         let newTarget = edge.target;
 
@@ -133,6 +133,36 @@ export const processDuplicates = (nodes: Node[], edges: any[]) => {
         if (toMerge.has(newTarget)) newTarget = toMerge.get(newTarget)!;
 
         return { ...edge, source: newSource, target: newTarget };
+    });
+
+    // Collapse duplicate edges (same source+target) that arise when an officer
+    // and PSC referring to the same person were merged. Replace the two stacked
+    // labels with a single combined "PSC & UBO" edge.
+    const edgesByPair = new Map<string, any[]>();
+    remappedEdges.forEach(edge => {
+        const key = `${edge.source}->${edge.target}`;
+        if (!edgesByPair.has(key)) edgesByPair.set(key, []);
+        edgesByPair.get(key)!.push(edge);
+    });
+
+    const consolidatedEdges: any[] = [];
+    edgesByPair.forEach((group) => {
+        if (group.length === 1) {
+            consolidatedEdges.push(group[0]);
+            return;
+        }
+
+        const targetNode = consolidatedNodes.find(n => n.id === group[0].target);
+        if (targetNode?.data?.isDualRole) {
+            const pscEdge = group.find(e => e.label === 'PSC');
+            const base = pscEdge || group[0];
+            consolidatedEdges.push({
+                ...base,
+                label: 'PSC & UBO',
+            });
+        } else {
+            consolidatedEdges.push(...group);
+        }
     });
 
     return { nodes: consolidatedNodes, edges: consolidatedEdges };

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { fetchFromCompaniesHouse } from "@/lib/api-client";
+import { chErrorResponse } from "@/lib/api-response";
 
 export async function GET(
     request: Request,
@@ -35,7 +36,6 @@ export async function GET(
             pscs: pscData.items || [],
         });
     } catch (error: any) {
-        console.error("Company API Error:", error);
-        return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+        return chErrorResponse(error);
     }
 }
