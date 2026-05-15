@@ -1123,41 +1123,76 @@ function GraphCanvasContent() {
         return `${slug}-network-${date}.${extension}`;
     };
 
-    const downloadImage = () => {
-        const nodes = getNodes();
+    // Chrome's hard canvas limit is ~16384px per side; we stay well under that
+    // to leave headroom for memory pressure on lower-spec machines.
+    const MAX_SCREENSHOT_DIMENSION = 12000;
 
-        // 1. Get the bounding box of all nodes
-        const nodesBounds = getRectOfNodes(nodes);
+    const downloadImage = (opts: { scale?: 1 | 2 | 4; fitVisible?: boolean } = {}) => {
+        const scale = opts.scale ?? 2;
+        const fitVisible = opts.fitVisible ?? false;
 
-        // 2. Calculate dimensions with some padding
-        const padding = 50;
-        const imageWidth = nodesBounds.width + (padding * 2);
-        const imageHeight = nodesBounds.height + (padding * 2);
+        const triggerDownload = (dataUrl: string) => {
+            const link = document.createElement('a');
+            link.download = exportFilename('png');
+            link.href = dataUrl;
+            link.click();
+        };
 
-        // 3. Calculate the transform to fit the nodes into the new image dimensions
-        // This effectively centers the graph and ensures scale is appropriate (close to 1)
-        const transform = getTransformForBounds(nodesBounds, imageWidth, imageHeight, 0.5, 2);
+        if (fitVisible) {
+            const flowEl = document.querySelector('.react-flow') as HTMLElement | null;
+            if (!flowEl) return;
+            const rect = flowEl.getBoundingClientRect();
+            const maxSide = Math.max(rect.width, rect.height);
+            const safePixelRatio = Math.max(1, Math.min(scale, MAX_SCREENSHOT_DIMENSION / maxSide));
+            toPng(flowEl, {
+                backgroundColor: '#f8fafc',
+                pixelRatio: safePixelRatio,
+                filter: (node) => {
+                    if (!(node instanceof HTMLElement)) return true;
+                    return !node.classList.contains('react-flow__panel')
+                        && !node.classList.contains('react-flow__controls')
+                        && !node.classList.contains('react-flow__minimap');
+                },
+            }).then(triggerDownload);
+            return;
+        }
+
+        const allNodes = getNodes();
+        const nodesBounds = getRectOfNodes(allNodes);
+        const padding = 80;
+        const naturalWidth = nodesBounds.width + padding * 2;
+        const naturalHeight = nodesBounds.height + padding * 2;
+
+        // If the natural bounds exceed the safe canvas limit, shrink the DOM
+        // (CSS transform) so the rasterised image stays within Chrome's budget.
+        const naturalMax = Math.max(naturalWidth, naturalHeight);
+        const domScale = naturalMax > MAX_SCREENSHOT_DIMENSION
+            ? MAX_SCREENSHOT_DIMENSION / naturalMax
+            : 1;
+
+        const imageWidth = naturalWidth * domScale;
+        const imageHeight = naturalHeight * domScale;
+
+        // Pick the highest pixelRatio that keeps the output under the limit.
+        const renderedMax = Math.max(imageWidth, imageHeight);
+        const safePixelRatio = Math.max(1, Math.min(scale, MAX_SCREENSHOT_DIMENSION / renderedMax));
+
+        const transform = getTransformForBounds(nodesBounds, imageWidth, imageHeight, domScale, domScale);
 
         const viewport = document.querySelector('.react-flow__viewport') as HTMLElement;
+        if (!viewport) return;
 
-        if (viewport) {
-            toPng(viewport, {
-                backgroundColor: '#f8fafc', // slate-50
-                width: imageWidth,
-                height: imageHeight,
-                style: {
-                    width: String(imageWidth),
-                    height: String(imageHeight),
-                    // Apply the transform to shift the graph into view and scale it
-                    transform: `translate(${transform[0]}px, ${transform[1]}px) scale(${transform[2]})`,
-                },
-            }).then((dataUrl) => {
-                const link = document.createElement('a');
-                link.download = exportFilename('png');
-                link.href = dataUrl;
-                link.click();
-            });
-        }
+        toPng(viewport, {
+            backgroundColor: '#f8fafc',
+            width: imageWidth,
+            height: imageHeight,
+            pixelRatio: safePixelRatio,
+            style: {
+                width: String(imageWidth),
+                height: String(imageHeight),
+                transform: `translate(${transform[0]}px, ${transform[1]}px) scale(${transform[2]})`,
+            },
+        }).then(triggerDownload);
     };
 
     const hasActiveFilter = statusFilters.length > 0 || sicFilters.length > 0;
