@@ -18,6 +18,7 @@ import ReactFlow, {
     getRectOfNodes,
     getTransformForBounds,
     ConnectionMode,
+    SelectionMode,
 } from 'reactflow';
 import { List, Search } from 'lucide-react';
 import { toPng } from 'html-to-image';
@@ -46,6 +47,7 @@ import LoadingOverlay from './canvas/LoadingOverlay';
 import CanvasToolPalette from './canvas/CanvasToolPalette';
 import SelectionActionBar from './canvas/SelectionActionBar';
 import DepthSelect from './canvas/DepthSelect';
+import { CompanySearchBar } from './canvas/CompanySearchBar';
 import ExportOptionsDialog, { ExportFormat, ExportOptions } from './canvas/ExportOptionsDialog';
 import { buildExportSheets, buildFlatRows, countsByType, filterForJson } from '@/lib/export';
 import SummaryCards from './canvas/SummaryCards';
@@ -65,7 +67,9 @@ function GraphCanvasContent() {
     const { getNodes, getViewport, screenToFlowPosition, setCenter, fitView } = useReactFlow();
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-    const [loading, setLoading] = React.useState(true);
+    // Only start in a loading state if a search is actually pending — on a
+    // fresh load with no `q` the canvas is just empty, not loading.
+    const [loading, setLoading] = React.useState(!!query);
     const [loadingLabel, setLoadingLabel] = React.useState<string>("Searching Companies House…");
     const [error, setError] = React.useState<string | null>(null);
     const [layoutDirection, setLayoutDirection] = React.useState('FORCE');
@@ -1057,6 +1061,57 @@ function GraphCanvasContent() {
         }
     }, [nodes, setNodes, selectedNode]);
 
+    // Align the rectangle-selected nodes along a shared edge or axis. Works on
+    // their bounding box so the result feels predictable regardless of order.
+    // The perpendicular axis is also distributed evenly so aligned nodes don't
+    // end up stacked on top of each other.
+    const handleAlignSelected = useCallback((axis: 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom') => {
+        const selected = nodes.filter(n => n.selected);
+        if (selected.length < 2) return;
+
+        const left = Math.min(...selected.map(n => n.position.x));
+        const right = Math.max(...selected.map(n => n.position.x + (n.width ?? 0)));
+        const top = Math.min(...selected.map(n => n.position.y));
+        const bottom = Math.max(...selected.map(n => n.position.y + (n.height ?? 0)));
+        const centerX = (left + right) / 2;
+        const centerY = (top + bottom) / 2;
+
+        const GAP = 32; // breathing room between distributed nodes
+        const vertical = axis === 'left' || axis === 'center-h' || axis === 'right';
+
+        // Order along the perpendicular axis and assign evenly-spaced slots so
+        // nodes keep their relative order but never overlap.
+        const slots = new Map<string, number>();
+        const ordered = [...selected].sort((a, b) =>
+            vertical ? a.position.y - b.position.y : a.position.x - b.position.x
+        );
+        const step = vertical
+            ? Math.max(...selected.map(n => n.height ?? 0)) + GAP
+            : Math.max(...selected.map(n => n.width ?? 0)) + GAP;
+        const startCoord = vertical ? top : left;
+        ordered.forEach((n, i) => slots.set(n.id, startCoord + i * step));
+
+        const selectedIds = new Set(selected.map(n => n.id));
+        setNodes(nds => nds.map(n => {
+            if (!selectedIds.has(n.id)) return n;
+            const w = n.width ?? 0;
+            const h = n.height ?? 0;
+            let { x, y } = n.position;
+            switch (axis) {
+                case 'left': x = left; break;
+                case 'center-h': x = centerX - w / 2; break;
+                case 'right': x = right - w; break;
+                case 'top': y = top; break;
+                case 'center-v': y = centerY - h / 2; break;
+                case 'bottom': y = bottom - h; break;
+            }
+            // Distribute on the perpendicular axis.
+            if (vertical) y = slots.get(n.id)!;
+            else x = slots.get(n.id)!;
+            return { ...n, position: { x, y } };
+        }));
+    }, [nodes, setNodes]);
+
     const handleDeleteSelected = () => {
         const selectedNodesIds = new Set(nodes.filter(n => n.selected).map(n => n.id));
         if (selectedNodesIds.size === 0) return;
@@ -1379,30 +1434,7 @@ function GraphCanvasContent() {
 
                     {/* Right side: Search Field */}
                     <div className="flex items-center pt-2">
-                        <form
-                            onSubmit={(e) => {
-                                e.preventDefault();
-                                const form = e.target as HTMLFormElement;
-                                const input = form.elements.namedItem('search') as HTMLInputElement;
-                                if (input.value.trim()) {
-                                    const newParams = new URLSearchParams(searchParams.toString());
-                                    newParams.set('q', input.value.trim());
-                                    window.history.pushState(null, '', `?${newParams.toString()}`);
-                                    window.location.search = `?${newParams.toString()}`;
-                                }
-                            }}
-                            className="flex items-center gap-2"
-                        >
-                            <input
-                                name="search"
-                                defaultValue={query || ''}
-                                placeholder="TESCO PLC"
-                                className="w-[300px] px-3 py-1.5 text-sm text-slate-900 border border-slate-200 rounded-md focus:outline-none focus:border-slate-300 focus:ring-1 focus:ring-slate-300 placeholder:text-slate-400"
-                            />
-                            <Button type="submit" size="sm" className="bg-[#132B5C] text-white hover:bg-[#132B5C]/90 h-[34px] px-6">
-                                Search
-                            </Button>
-                        </form>
+                        <CompanySearchBar />
                     </div>
                 </div>
 
@@ -1492,6 +1524,9 @@ function GraphCanvasContent() {
                     nodeTypes={nodeTypes}
                     isValidConnection={() => true}
                     connectionMode={ConnectionMode.Loose}
+                    // Select a node if the rectangle touches any part of it,
+                    // not only when it fully encloses the node.
+                    selectionMode={SelectionMode.Partial}
                     // In "select" mode left-drag draws a rectangle and pan is
                     // restricted to middle-mouse. Back to defaults in "pan" mode.
                     selectionOnDrag={canvasMode === 'select'}
@@ -1508,6 +1543,7 @@ function GraphCanvasContent() {
                         onExpand={handleExpandNetwork}
                         canExpand={!!selectedNode && !loading}
                         onRecolor={handleRecolorSelected}
+                        onAlign={handleAlignSelected}
                     />
                 </ReactFlow>
                 <CanvasToolPalette

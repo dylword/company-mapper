@@ -239,7 +239,7 @@ export const AIChatPanel: React.FC<AIChatPanelProps> = ({ nodes, edges }) => {
             <aside
                 style={{ width: open ? width : 0 }}
                 className={cn(
-                    "fixed top-0 right-0 z-40 h-full bg-white border-l border-slate-200 shadow-[0_0_30px_rgba(15,23,42,0.08)] flex flex-col transition-[transform,width] duration-300",
+                    "fixed top-0 right-0 z-[60] h-full bg-white border-l border-slate-200 shadow-[0_0_30px_rgba(15,23,42,0.08)] flex flex-col transition-[transform,width] duration-300",
                     open ? "translate-x-0" : "translate-x-full",
                     resizing && "transition-none"
                 )}

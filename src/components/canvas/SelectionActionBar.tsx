@@ -2,9 +2,15 @@
 
 import React from "react";
 import { Node, NodeToolbar, Position } from "reactflow";
-import { Trash, Trash2, Maximize2, Palette, X } from "lucide-react";
+import {
+    Trash, Trash2, Maximize2, Palette, X,
+    AlignStartVertical, AlignCenterVertical, AlignEndVertical,
+    AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
+} from "lucide-react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+
+export type AlignAxis = 'left' | 'center-h' | 'right' | 'top' | 'center-v' | 'bottom';
 
 interface SelectionActionBarProps {
     nodes: Node[];
@@ -13,7 +19,17 @@ interface SelectionActionBarProps {
     onExpand?: () => void;
     canExpand?: boolean;
     onRecolor: (color: string | null) => void;
+    onAlign: (axis: AlignAxis) => void;
 }
+
+const ALIGN_OPTIONS: { axis: AlignAxis; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { axis: 'left', label: "Align left", icon: AlignStartVertical },
+    { axis: 'center-h', label: "Align centre", icon: AlignCenterVertical },
+    { axis: 'right', label: "Align right", icon: AlignEndVertical },
+    { axis: 'top', label: "Align top", icon: AlignStartHorizontal },
+    { axis: 'center-v', label: "Align middle", icon: AlignCenterHorizontal },
+    { axis: 'bottom', label: "Align bottom", icon: AlignEndHorizontal },
+];
 
 interface ActionButtonProps {
     icon: React.ComponentType<{ className?: string }>;
@@ -63,10 +79,15 @@ export const SelectionActionBar: React.FC<SelectionActionBarProps> = ({
     onExpand,
     canExpand,
     onRecolor,
+    onAlign,
 }) => {
     const selected = nodes.filter(n => n.selected);
     const [colorOpen, setColorOpen] = React.useState(false);
+    const [alignOpen, setAlignOpen] = React.useState(false);
     if (selected.length === 0) return null;
+
+    // Aligning needs at least two nodes to have something to align against.
+    const canAlign = selected.length > 1;
 
     // Anchor the toolbar to the most recently selected node. react-flow's
     // NodeToolbar handles positioning relative to that node and follows pan/zoom.
@@ -119,6 +140,38 @@ export const SelectionActionBar: React.FC<SelectionActionBarProps> = ({
                             <X className="h-3 w-3" />
                             Reset to default
                         </button>
+                    </PopoverContent>
+                </Popover>
+
+                <Popover open={alignOpen} onOpenChange={(o) => canAlign && setAlignOpen(o)}>
+                    <PopoverTrigger asChild>
+                        <button
+                            disabled={!canAlign}
+                            className={cn(
+                                "group relative inline-flex items-center justify-center h-7 w-7 rounded transition-colors",
+                                canAlign ? "text-slate-700 hover:bg-slate-100" : "opacity-40 cursor-not-allowed text-slate-700"
+                            )}
+                            title={canAlign ? "Align selected" : "Select 2+ nodes to align"}
+                        >
+                            <AlignCenterHorizontal className="h-3.5 w-3.5" />
+                        </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="center" sideOffset={8} className="p-2 w-[150px]">
+                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 px-1 pb-1.5">
+                            Align {selected.length}
+                        </div>
+                        <div className="grid grid-cols-3 gap-1">
+                            {ALIGN_OPTIONS.map(opt => (
+                                <button
+                                    key={opt.axis}
+                                    onClick={() => { onAlign(opt.axis); setAlignOpen(false); }}
+                                    className="inline-flex items-center justify-center h-8 rounded-md border border-slate-200 text-slate-700 hover:bg-slate-100 hover:text-[#132B5C] transition-colors"
+                                    title={opt.label}
+                                >
+                                    <opt.icon className="h-4 w-4" />
+                                </button>
+                            ))}
+                        </div>
                     </PopoverContent>
                 </Popover>
 
