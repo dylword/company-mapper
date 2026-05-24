@@ -24,6 +24,28 @@ const extractSurname = (node: Node) => {
     return normalize(source.name);
 };
 
+const extractForename = (node: Node) => {
+    const source = node.data.source;
+    if (!source) return '';
+
+    if (source.name_elements?.forename) {
+        return normalize(source.name_elements.forename);
+    }
+
+    // Officers: "SURNAME, Firstname Middlename" — first token after the comma.
+    if (source.name && source.name.includes(',')) {
+        const after = source.name.split(',')[1] || '';
+        const first = after.trim().split(/\s+/)[0] || '';
+        return normalize(first);
+    }
+
+    // Fallback: first whitespace-separated token of the full name.
+    if (source.name) {
+        return normalize(source.name.trim().split(/\s+/)[0] || '');
+    }
+    return '';
+};
+
 const compareDates = (source1: any, source2: any) => {
     const d1 = source1?.date_of_birth || source1?.source?.date_of_birth;
     const d2 = source2?.date_of_birth || source2?.source?.date_of_birth;
@@ -63,6 +85,10 @@ export const processDuplicates = (nodes: Node[], edges: any[]) => {
             const surnameB = extractSurname(nodeB);
             const sameSurname = surnameA === surnameB && surnameA !== '';
 
+            const forenameA = extractForename(nodeA);
+            const forenameB = extractForename(nodeB);
+            const sameForename = forenameA === forenameB && forenameA !== '';
+
             const sameDob = compareDates(nodeA.data, nodeB.data);
             const sameNationality = compareNationalities(nodeA.data, nodeB.data);
             const samePostcode = comparePostcodes(nodeA.data, nodeB.data);
@@ -74,8 +100,11 @@ export const processDuplicates = (nodes: Node[], edges: any[]) => {
                 isDefinite = true;
             } else if (sameDob && sameNationality && samePostcode) {
                 isDefinite = true;
-            } else if (sameSurname && samePostcode) {
-                isProbable = true;
+            } else if (sameSurname && sameForename && samePostcode) {
+                // Same full name at same postcode is treated as the same
+                // person and auto-merged. Forename guard already excludes
+                // family members sharing surname + home postcode.
+                isDefinite = true;
             }
 
             if (isDefinite) {

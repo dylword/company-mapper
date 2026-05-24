@@ -185,8 +185,17 @@ function GraphCanvasContent() {
     const normalizeAddressKey = (addr: any) => {
         if (!addr) return '';
         const pc = norm(addr.postal_code);
-        const place = norm(`${addr.premises || ''} ${addr.address_line_1 || ''}`);
-        if (pc) return `${pc}|${place}`;
+        // CH splits the same physical address across premises/line1/line2
+        // inconsistently between endpoints, so street numbers and building
+        // names land in different fields. Anchor on postcode + the sub-unit
+        // (flat/apt/unit/suite N) so the same flat collapses to one node
+        // regardless of how the street portion is structured. Different flats
+        // at the same postcode stay separate; no sub-unit falls back to
+        // postcode-only.
+        const placeRaw = `${addr.premises || ''} ${addr.address_line_1 || ''} ${addr.address_line_2 || ''}`;
+        const subUnitMatch = placeRaw.match(/\b(?:flat|apt|apartment|unit|suite|studio)\s*([a-z0-9]+)/i);
+        const subUnit = subUnitMatch ? subUnitMatch[1].toLowerCase() : '';
+        if (pc) return `${pc}|${subUnit}`;
         // Fall back to a fuller key when no postcode is available (rare).
         return [addr.premises, addr.address_line_1, addr.address_line_2, addr.locality, addr.region, addr.country]
             .filter(Boolean)
